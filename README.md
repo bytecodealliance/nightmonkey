@@ -16,9 +16,10 @@ runs alongside the runtime compiled to Wasm. There are two modes of use:
   objects (such as prototype objects), and rewrites that snapshot with
   compiled bodies.
 - **In-process** (the testing flow): the JS shell compiled to Wasm runs
-  under `wasm-jit-runner`, walks its own live heap, compiles the script
-  tree, and injects the bodies into its running instance via runner
-  hostcalls (`--night-inprocess`). A drop-in shell for jit-tests.
+  under `wasm-jit-runner` and, with `--night-inprocess`, asks it to compile
+  its script tree (one hostcall). The runner walks the shell's live heap,
+  runs the compiler natively, and injects the bodies into the running
+  instance. A drop-in shell for jit-tests.
 
 NightMonkey has a two-part structure: an *optimistic static type
 analysis* and a *guard-based codegen backend*. The idea is that we:
@@ -60,31 +61,31 @@ Block Versioning, but that did not converge well.)
 | Path | Contents |
 |---|---|
 | `compiler/` | The compiler crate (`night-compiler`). |
-| `compiler/night-compiler.h` | C ABI between SpiderMonkey and the compiler. |
-| `compiler/src/source.rs`, `src/source/ffi.rs` | The `Source` object graph: the sole input to the compiler. |
+| `compiler/src/source.rs` | The `Source` object graph: the sole input to the compiler. |
 | `compiler/src/bytecode.rs` | Bytecode parser and `OpcodeVisitor`. |
 | `compiler/src/opcodes/` | The `JSOp` enum, lengths and stack effects, generated from the engine's `vm/Opcodes.h` by `scripts/gen_opcodes.py` and checked in per engine version (`ff147.rs`, ...); a cargo feature of the same name selects one. |
 | `compiler/src/options.rs` | `Options`/`Diagnostics`: the entire configuration surface. |
 | `compiler/src/likelier/` | The speculative likely-types analysis (`scan`/`heap`/`calls`/`engine`/`emit`/`dump`). |
 | `compiler/src/opsem.rs` | Interval algebra and op semantics; the vocabulary shared by analysis and codegen. |
 | `compiler/src/facts.rs` | `LikelyFacts`: the analysis-to-codegen fact contract. |
-| `compiler/src/wasm/bbv.rs` | The workqueue-BBV bytecode-to-Wasm codegen driver. |
+| `compiler/src/mir/` | MIR: the typed SSA IR, its validator and optimizer (`docs/MIR.md`). |
+| `compiler/src/wasm/mir/` | The MIR tier: building MIR from bytecode, lowering it to Wasm, inlining, plus the shared ABI constants (`abi.rs`), class-word rules (`stamp.rs`) and out-of-line runtime helpers (`helpers.rs`). |
+| `compiler/src/wasm/baseline/` | The baseline tier: the generic one-op-at-a-time lowering MIR exits to (`docs/BASELINE.md`). |
 | `compiler/src/wasm/translate.rs` | Shared translation substrate: `Helpers`/`AtomTable`/`Outcome`/ctx types, layout constants. |
 | `compiler/src/wasm/regex.rs` | The regex AOT compiler (irregexp bytecode to Wasm matchers). |
 | `compiler/src/wasm/mod.rs` | The `layout_env` / `translate_all` seams: analysis prepass, reserved linear-memory region layout, body translation, table patching. |
-| `compiler/src/wasm/inprocess.rs` | In-process batch builder for the runner hostcalls. |
+| `compiler/src/wasm/inprocess.rs` | In-process batch builder, run by `wasm-jit-runner`'s `night_compile` hostcall. |
 | `runtime/` | The night runtime: `NightRuntime.cpp` is the `night_runtime_*` C ABI generated code calls, in front of the engine halves it forwards to -- `NightOps.cpp` (bytecode ops), `NightInlineCaches.cpp` (property-cache populate and replay), `NightInlineHeap.cpp` (inline allocation, write barriers, and the baked-layout asserts), `NightGenerator.cpp`, `NightRegExp.cpp`. `NightEntry.cpp` is the other direction: entering compiled bodies. `NightHooks.cpp` is the engine's external compiler hook table (see `docs/INTEGRATION.md`). Plus the value stack and snapshot registration/activation/capture. Built against SpiderMonkey's private headers. |
 | `shell/` | `nightshell.cpp`: the NightMonkey wasm shell, SpiderMonkey's shell (`libjsshell`) with the hooks installed and the `--night-snapshot` / `--night-inprocess` flows. |
-| `guest/` | `night-guest`: the compiler and snapshot reader as one wasm staticlib for the in-process lane. |
 | `spidermonkey/` | The mozconfig that builds SpiderMonkey the way NightMonkey needs it. |
 | `scripts/` | `build-spidermonkey.sh`, `run-jit-tests.sh`, `run-jstests.sh`, and the harness shell wrapper template. |
 | `tests/` | The jit-test and jstests exclusion lists for the AOT lane. |
 | `snapshot/` | Snapshot/live-heap reader crate (`night-snapshot`): parses the registration block and walks the script graph into a `Source`. |
 | `nightmonkey/` | The `nightmonkey` binary: snapshot in, AOT-compiled module out. The optional `wizen` Cargo feature also accepts programs and drives wizer as a library. |
-| `wasm-jit-runner/` | Wasmtime-based runner exposing function-injection hostcalls for the in-process flow. |
+| `wasm-jit-runner/` | Wasmtime-based runner for the in-process flow: the `night_compile` hostcall runs the compiler over the shell's live heap and injects the bodies. |
 | `configs/` | Benchmark-lane mozconfigs for the SpiderMonkey tree (`mozconfig-native`/`-ion`/`-wasm`/`-weval`); the NightMonkey build itself uses `spidermonkey/mozconfig`. |
 | `docs/` | `DESIGN.md`, `INTEGRATION.md` (the SpiderMonkey hook surface), `TODO`. |
-| `tools/` | Profiling, benchmarking, and visualization helpers (`viz.py`, `opprof.py`, `pairab.sh`, ...). |
+| `tools/` | Profiling and benchmarking helpers (`opprof.py`, `hotloop.py`, `pairab.sh`, ...). |
 
 ## Building
 
@@ -113,17 +114,17 @@ Step 2 -- build NightMonkey against it:
 cmake -S . -B build -DSPIDERMONKEY_DIST=/path/to/firefox/obj-nightmonkey-sm/dist
 cmake --build build
 # -> build/bin/js               (the NightMonkey wasm32-wasi shell)
-# -> build/bin/js-inproc        (the same, with the in-process compiler)
+# -> build/bin/js-inproc        (the same, with the --night-inprocess driver)
 # -> build/bin/nightmonkey      (the host AOT compiler)
-# -> build/bin/wasm-jit-runner  (the in-process test host)
+# -> build/bin/wasm-jit-runner  (the in-process test host, with the compiler)
 # -> build/bin/inproc-shell.sh  (the harness wrapper)
 ```
 
 The CMake build compiles the runtime and the shell with exactly the flags
 libjs used (same sysroot, target, ABI flags and force-included configuration
-headers), and drives Cargo for the host tools and the guest staticlib.
-Options: `-DNIGHT_INPROCESS=OFF` drops the in-process lane (no guest
-compiler, no runner); `-DNIGHT_DEBUG=ON` turns on the runtime diagnostics and
+headers), and drives Cargo for the host tools. Options:
+`-DNIGHT_INPROCESS=OFF` drops the in-process lane (no `js-inproc`, no
+runner); `-DNIGHT_DEBUG=ON` turns on the runtime diagnostics and
 the crash-on-failure of the in-process lane; `-DNIGHT_ENGINE_VERSION=ff147`
 selects the engine version (below).
 
@@ -154,7 +155,7 @@ scripts/gen_opcodes.py generate ff153 /path/to/that/Opcodes.h
 ```
 
 declare the `ff153` feature in `compiler/Cargo.toml` and the crates
-that forward it (`snapshot`, `nightmonkey`, `guest`), add its arm to
+that forward it (`snapshot`, `nightmonkey`, `wasm-jit-runner`), add its arm to
 `compiler/src/opcodes/mod.rs`, and condition the lowering changes on
 `feature = "ff153"`.
 
@@ -195,13 +196,22 @@ nightmonkey --shell build/bin/js program.js --keep-snapshot snap.wasm -o out.was
 nightmonkey snap.wasm -o out.wasm      # recompile without re-wizening
 ```
 
-`nightmonkey --help` lists the diagnostics (`--stats`, `--dump-bytecode`,
-`--dump-bbv`, `--dump-facts`, `--dump-graph`, `--viz`, `--viz-lower`,
-`--viz-facts`) and the compilation options (`--force-interp`,
-`--keep-names`). `--dump-bytecode`
-takes an optional comma-separated source-id list
-(`--dump-bytecode=145,153`); a whole-bundle disassembly is megabytes.
+`nightmonkey --help` lists the diagnostics (`--stats`, `--dump-tiers`,
+`--dump-mir`, `--dump-facts`, `--dump-graph`, ...), the instrumentation
+switches (`--mir-exit-census`, `--block-census`) and the compilation
+options (`--keep-names`, `--pipeline`, `--strict-coverage`).
 Debug sections are stripped by default; `--keep-names` retains them.
+
+To see what a program compiles to, `tools/viz.py` writes one HTML page with,
+per script, its source, its bytecode, its MIR and the lowered waffle IR side
+by side, linked: click a line, op, instruction or value and its counterparts
+in the other columns light up (the URL keeps the selection, so links can be
+shared):
+
+```
+tools/viz.py program.js -o program.html                  # runs nightmonkey --viz
+tools/viz.py react.js -o r.html --only '^pushAttribute$' # a big program: pick scripts
+```
 
 ## Flow 2: in-process (drop-in shell for jit-tests)
 
@@ -209,43 +219,63 @@ Run a program:
 
 ```
 build/bin/wasm-jit-runner --dir / --cache-dir ~/.cache/wjr \
-    build/bin/js -- --night-inprocess /abs/path/program.js
+    build/bin/js-inproc -- --night-inprocess /abs/path/program.js
 ```
 
 The script path must be **absolute**: the guest resolves paths against the
 runner's preopen root (`--dir /`). `--cache-dir` caches the compiled shell.
 Everything after `--` goes to the JS shell. Omitting `--night-inprocess` runs
-the same binary as a plain interpreter -- the differential baseline.
+the same binary as a plain interpreter -- the interpreter-only ("interp")
+lane, the differential reference for the compiled lanes.
 
-The jit-test suite in both lanes, from the SpiderMonkey checkout's harness:
+The compiler runs in the runner, not in the shell: a compiler change
+reaches the lanes through `make -C build wasm_jit_runner`, a runtime or
+engine change through `make -C build js-inproc` (or `make -C build` for
+both). The runner compiles with Rayon; `WJR_COMPILE_THREADS` caps its
+threads, and `WJR_COMPILE_STATS=1` prints the walk and compile times.
+
+The jit-test suite in the default (MIR) lane and the interp lane, from
+the SpiderMonkey checkout's harness:
 
 ```
 scripts/run-jit-tests.sh /path/to/firefox build -- -j16
 NIGHT_INPROCESS_OFF=1 scripts/run-jit-tests.sh /path/to/firefox build -- -j16
 ```
 
+Compiler flags for the in-process batch (the same ones `nightmonkey`
+takes) go in `NIGHT_OPTIONS`, which the wrapper passes to the shell as
+`--night-options`. For example, the baseline-tier lane, failing any test
+whose script ends up interpreted:
+
+```
+NIGHT_OPTIONS="--pipeline baseline --strict-coverage" \
+    scripts/run-jit-tests.sh /path/to/firefox build -- -j16
+```
+
+`--dump-tiers` reports, per script, which tier compiled it and why others
+declined (`docs/BASELINE.md`).
+
 `scripts/run-jstests.sh` does the same for jstests (hours for the full
-suite; append a path to scope). Both lanes are expected to pass completely.
-Both lanes skip `tests/wasi-jit-test-excludes.txt` and
+suite; append a path to scope). Every lane is expected to pass completely.
+Every lane skips `tests/wasi-jit-test-excludes.txt` and
 `tests/wasi-jstests-excludes.txt`: tests the wasm32-wasi shell cannot run at
 all (no Intl, no shared memory or Atomics, no threads, no time zone database,
-a small native stack), independent of the tier. The AOT lane additionally
+a small native stack), independent of the tier. The compiled lanes additionally
 skips `tests/jit-test-excludes.txt` and `tests/jstests-excludes.txt` (passed
 as `--exclude-from` / `--exclude-file`, so the same tests still run in the
-baseline lane): tests exercising designed-out capability -- the debugger /
+interp lane): tests exercising designed-out capability -- the debugger /
 frame-introspection / interrupt classes -- plus an annotated artifact class
 (GC-introspection tests sensitive to the tier's literal-string and
 allocation profile; each carries a comment). The SpiderMonkey tree carries
 no test annotations for NightMonkey. NightMonkey's own regression tests
-(`tests/jit-test/`) run in both lanes with `scripts/run-night-tests.sh`.
+(`tests/jit-test/`) run in the compiled and interp lanes with
+`scripts/run-night-tests.sh`.
 
 ## Build-system notes
 
-- The in-process lane links two Rust static libraries into the shell:
-  SpiderMonkey's `libjsrust.a` and NightMonkey's `libnight_guest.a`. Both
-  are built by the same toolchain against the prebuilt `wasm32-wasip1`
-  standard library, so their std objects are identical and the linker keeps
-  one copy.
+- The shells link no NightMonkey Rust code: the compiler is a host tool
+  (`nightmonkey`, `wasm-jit-runner`), and the in-process driver in
+  `js-inproc` is a C++ stub around the `night_compile` hostcall.
 - Layout facts the compiler bakes into generated code are pinned by
   `static_assert`s in `runtime/NightInlineHeap.cpp` against the engine
   headers, and the snapshot reader checks the registration block's ABI
@@ -261,10 +291,13 @@ For performance work, the benchmark-lane configs
 ## Documentation
 
 - **[`docs/DESIGN.md`](docs/DESIGN.md)**: the design of record: the
-  soundness model and the object stamp, the BBV emission strategy, the
-  layered lowerings for the common opcodes, the analysis (data structures,
+  soundness model and the object stamp, the MIR and baseline tiers, the
+  analysis (data structures,
   lattices, abstract interpretation), the runtime ABI, and the known
   limitations and rough edges.
+- **[`docs/MIR.md`](docs/MIR.md)** and **[`docs/BASELINE.md`](docs/BASELINE.md)**:
+  the two compiled tiers: MIR's IR, types, exits and onramps, and the
+  baseline tier MIR exits to.
 - **[`docs/INTEGRATION.md`](docs/INTEGRATION.md)**: the SpiderMonkey side:
   the `--enable-external-compiler-hooks` surface NightMonkey plugs into,
   organized by mechanism, and how to port it to another SpiderMonkey.

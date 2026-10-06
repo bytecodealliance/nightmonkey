@@ -9,9 +9,18 @@
 //! ```text
 //! wasm-jit-runner <module.wasm> [guest args...]
 //! ```
+//!
+//! It also exposes `env.night_compile`, which runs the NightMonkey compiler
+//! in the host over the guest's live heap (see `compile.rs`).
+//!
+//! `WJR_JITDUMP=1` writes a jitdump for `perf inject --jit` (instruction-
+//! level annotation of the compiled code).
+//! `WJR_PERFMAP=1` writes a `/tmp/perf-<pid>.map` for the compiled code
+//! (the guest and the functions it adds), so `perf report` can name it.
 
 mod addfuncs;
 mod cache;
+mod compile;
 mod modedit;
 
 use anyhow::{Context, Result};
@@ -130,6 +139,12 @@ fn run() -> Result<()> {
     let mut config = Config::new();
     config.max_wasm_stack(MAX_WASM_STACK);
     config.async_stack_size(MAX_WASM_STACK + 16 * 1024 * 1024);
+    if std::env::var_os("WJR_PERFMAP").is_some() {
+        config.profiler(wasmtime::ProfilingStrategy::PerfMap);
+    }
+    if std::env::var_os("WJR_JITDUMP").is_some() {
+        config.profiler(wasmtime::ProfilingStrategy::JitDump);
+    }
     let engine = Engine::new(&config)?;
 
     // Load the guest module and rewrite it so all memories/tables/globals are
@@ -147,6 +162,7 @@ fn run() -> Result<()> {
         .anyhow()
         .context("adding WASI to linker")?;
     addfuncs::add_to_linker(&mut linker).context("adding wasm_add_funcs to linker")?;
+    compile::add_to_linker(&mut linker).context("adding night_compile to linker")?;
 
     // Build the WASI context: inherit stdio/env, preopen dirs, pass argv.
     let mut builder = WasiCtxBuilder::new();

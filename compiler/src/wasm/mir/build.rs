@@ -2171,7 +2171,16 @@ impl<'s, 'a> Run<'s, 'a> {
             _ => return,
         };
         let x = self.top();
-        if !matches!(x.ty, Ty::Val(_)) {
+        let Ty::Val(tags) = x.ty else {
+            return;
+        };
+        // A value already proven to have the tags the guard would test (a
+        // typed field read under TYPES): the unbox alone, which cannot fail.
+        let Opcode::GuardUnbox(kind) = op else { unreachable!() };
+        if tags.is_nonempty_subset_of(kind.tags()) {
+            let p = self.inst(Opcode::Unbox(kind), vec![x.v], Some(ty.mir()));
+            self.st.pop();
+            self.push(p, ty);
             return;
         }
         let depth = self.st.len() - self.frame_len();
@@ -3004,8 +3013,16 @@ impl<'s, 'a> Run<'s, 'a> {
             let r = self
                 .js_dirty_exits(Opcode::LoadField(a), vec![o], Some(site.claim_ty()), next, None)
                 .unwrap();
-            let r = self.weaken(r, MType::VAL_TOP);
-            self.push(r, Ty::Val(TagSet::ALL));
+            // Under TYPES the read is of the field's predicted type: it
+            // keeps those tags, and `guard_result` then unboxes without a
+            // guard. Without TYPES the claim is guarded at the def.
+            let (t, tags) = if site.types {
+                (site.claim_ty(), site.load_tags)
+            } else {
+                (MType::VAL_TOP, TagSet::ALL)
+            };
+            let r = self.weaken(r, t);
+            self.push(r, Ty::Val(tags));
             self.guard_result(site.claim, next, false);
         } else if let Some(site) = site {
             // The predicted layout: guard the receiver's class

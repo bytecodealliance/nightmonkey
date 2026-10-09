@@ -15,7 +15,7 @@ ff147 = []
 [dependencies]
 # AOT Wasm emitter: builds the codegen core module and merges it into
 # the runtime reactor module (weval-style).
-waffle = "0.3.2"
+waffle = "0.3.3"
 log = "0.4"
 # MIR's per-script front half runs in parallel (`translate_all`).
 rayon = "1"

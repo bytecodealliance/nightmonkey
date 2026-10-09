@@ -18,7 +18,3 @@ license = "Apache-2.0 WITH LLVM-exception"
 [profile.release]
 debug = false
 
-# waffle 0.3.3 pre-release (O(1) dominance queries: `validate` was quadratic
-# in large bodies). Drop once 0.3.3 is on crates.io.
-[patch.crates-io]
-waffle = { git = "https://github.com/bytecodealliance/waffle", branch = "cfallin/release-0.3.3" }

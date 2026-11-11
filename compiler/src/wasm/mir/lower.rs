@@ -24,14 +24,22 @@
 //!   the value there (`enter_block`, `conform`). Unmanaged values are
 //!   never rooted.
 //! - **Frame.** Formals, locals and rval stay in their own
-//!   representations (no write-through, except a mapped `arguments`'s
-//!   formals); exits write them.
-//! - **Exits (§5.1).** An exit writes the whole baseline frame (`this`,
-//!   formals, locals, rval, stack, and the fixed slots), stores its resume
-//!   word, calls the baseline body with `ARGC_RESUME_BIT`, and returns
-//!   what it returns.
-//! - **Effects.** Every body reports `FLAGS_ALL`, and a generic op always
-//!   takes its `ok_dirty` edge; accurate flags come with M5.
+//!   representations in SSA, and each write of one is also stored, boxed,
+//!   to its baseline frame slot (`frame.store`, the builder's
+//!   write-through, §5.1). The env slot is written through too
+//!   (`env.set`/`env.pop`). The frame is thus the boxed truth for those
+//!   slots at every exit.
+//! - **Exits (§5.1).** An exit goes to the hub for its frame shape, which
+//!   boxes and stores what the frame does not already hold (`this`, the
+//!   operand stack, the fixed slots), stores the resume word and the
+//!   onramp backoff, and then either calls the baseline body with
+//!   `ARGC_RESUME_BIT` and returns what it returns (a fresh entry), or
+//!   returns `ERR_DEOPT` to the baseline caller that onramped in.
+//!   `exit.inline` finishes an inlined callee in its own baseline body
+//!   and continues the caller (§5.5).
+//! - **Effects.** Every body reports `FLAGS_ALL`. A generic op or call
+//!   takes its `ok_clean` edge when the stamp epoch did not move across
+//!   it (no class word was demoted), else `ok_dirty` (§4.2, §6).
 
 use std::collections::{BTreeMap, BTreeSet};
 

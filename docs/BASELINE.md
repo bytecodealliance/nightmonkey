@@ -1,9 +1,17 @@
-# NightMonkey baseline tier: design and plan (draft)
+# NightMonkey baseline tier: design and plan
 
-Status: **draft for review**. Nothing here is implemented. This replaces
-the "GEN is today's `Dirty`-track BBV lowering" premise of `docs/MIR.md`
-(§0, §5, §9) and makes `docs/MIR-GEN-SEAM.md` obsolete. §9 lists the
-MIR.md changes that follow.
+Status: **implemented** (`compiler/src/wasm/baseline/`). B0–B5 are done,
+along with the resume and onramp entries MIR needs (§8). Baseline is
+the deopt target of the MIR tier, and with `--pipeline baseline` it is
+the only compiled tier. This document was written as a draft before any
+of it existed, when the legacy BBV backend (with its OPT and GEN tracks)
+was the compiler. BBV has since been removed, so §1 and the mentions of
+BBV, GEN and `Legacy` describe that starting point. §8's "Status"
+records where the build departed from the plan.
+
+The design replaced the "GEN is the `Dirty`-track BBV lowering" premise
+of `docs/MIR.md` (§0, §5, §9) and made `docs/MIR-GEN-SEAM.md` obsolete.
+§9 lists the MIR.md changes that followed. MIR.md rev 6 applied them.
 
 ## 0. Summary
 
@@ -20,8 +28,9 @@ MIR.md changes that follow.
 - **It uses the existing AOT stack and ABI.** Frames are built in place
   on the NightStack, bodies have the `night_abi_sig2` signature, and
   interpreter entry, calls, exceptions and generator resume follow
-  today's protocols. A baseline body can call, and be called by, legacy
-  BBV bodies and the interpreter.
+  today's protocols. A baseline body can call, and be called by, MIR
+  bodies and the interpreter (at the time of writing, legacy BBV bodies
+  too).
 - **The frame format is the contract between tiers.** A MIR exit
   writes a baseline frame and resumes baseline at a pc. A MIR onramp
   reads a baseline frame at a loop header. MIR and baseline are
@@ -38,7 +47,9 @@ MIR.md changes that follow.
 
 ## 1. What exists and what we reuse
 
-Verified in code; see the investigation notes for file references.
+This is the state of the code before baseline (September 2026), as
+verified then. The BBV pieces it names are gone, and the file and line
+references are stale.
 
 - **NightStack**: a 2 MiB static array of boxed Values. `[base, top)` is
   traced as roots on every GC. Any helper that may GC takes `top` as its
@@ -319,6 +330,10 @@ The cost is one compare per loop iteration in baseline code.
   - `Mir`: MIR plus baseline. It falls back to baseline alone when the
     MIR builder declines, and to BBV or the interpreter per
     `--baseline-fallback` when baseline declines.
+
+  **As built:** `--pipeline baseline|mir`, with `mir` the default.
+  `Legacy` was removed with BBV. A script baseline declines is
+  interpreted (no `--baseline-fallback` flag).
 - **Coverage**:
   - Per-script diagnostics say which tier compiled each script, and
     which gate declined it with what reason.
@@ -420,7 +435,7 @@ exhaustive `match` with no wildcard.
 ## 8. Plan
 
 Each step builds, passes `cargo test`, and leaves `Legacy` codegen
-byte-identical.
+byte-identical. (That rule held while `Legacy` existed.)
 
 - **B0. Contract and plumbing.**
   - `FrameLayout` and `depth(pc)`, with unit tests (depth at every try
@@ -432,8 +447,8 @@ byte-identical.
   - Write down the frame format and resume protocol in this document as
     final.
   - **Done** (`wasm/baseline/layout.rs`, `wasm/tier.rs`):
-    - The flags are `--pipeline legacy|baseline|mir`,
-      `--strict-coverage` and `--dump-tiers`, parsed by
+    - The flags are `--pipeline legacy|baseline|mir` (now
+      `baseline|mir`), `--strict-coverage` and `--dump-tiers`, parsed by
       `Options::apply_flag` for both the CLI and the in-process option
       string.
     - The in-process channel is `NIGHT_OPTIONS`, passed through
@@ -441,8 +456,8 @@ byte-identical.
       `night_inproc_build`. Under strict coverage, a failed in-process
       build aborts.
     - `baseline::translate_script` checks the frame contract on every
-      script (layout, depths, try-note agreement) and then declines
-      with "not implemented" until B1.
+      script (layout, depths, try-note agreement). Until B1 it then
+      declined with "not implemented".
 - **B1. Straight-line baseline.**
   - Ops: prologue, constants, stack ops, locals/args/rval, arithmetic
     and compares via helpers, `to_boolean` branches, loops, return,
@@ -565,12 +580,12 @@ Deviations from the plan above, and details it did not settle:
   `EvalKernel` (DIRECT_EVAL) in the MPL `NightOpsInterp.cpp` that takes
   the caller's script, pc and env as arguments. It omits the eval cache
   and the JSON fast path.
-- **`NightEnvSetup` builds named-lambda environments.** BBV still gates
-  them out.
+- **`NightEnvSetup` builds named-lambda environments**, which BBV gated
+  out.
 - **Modules.** The module ops compile, but the in-process batch compiles
   only the positional classic script, so module *scripts* never reach
   the compiler in the test lanes. Compiling them needs the batch to
-  register module roots.
+  register module roots. (Still open: `docs/TODO`.)
 - **Size bound.** Scripts over 1 MiB of bytecode are declined. BBV's
   bound is 128 KiB, and at least one jit-test has a 174 KB top-level
   script that baseline compiles fine. Octane's mandreel has a 2 MB function that becomes
@@ -582,10 +597,12 @@ Deviations from the plan above, and details it did not settle:
   error-return block instead of one shared block with a predecessor per
   helper call. Both are written up in waffle's `DOMTREE-TODO.md`; fixing
   them would make this bound a code-size policy rather than a necessity.
-- **The baseline-tier lane excludes ten more tests**
-  (`tests/jit-test-excludes-baseline.txt`). They are frame-introspection
-  and decompiled-message tests that pass in the legacy lane only because
-  BBV leaves their eval-using scripts interpreted.
+- **The compiled lanes exclude more tests**
+  (`tests/jit-test-excludes-baseline.txt`, which applies under both
+  pipelines). They are frame-introspection and decompiled-message tests
+  that passed in the legacy lane only because BBV left their eval-using
+  scripts interpreted. `tests/jit-test-excludes-mir.txt` adds two GC
+  tests that depend on a dead local keeping its object alive.
 - **The resume entry (for M1).** `translate_script` takes a MIR body's
   resume words.
   - With any, the body gains an `ARGC_RESUME_BIT` fork ahead of the
@@ -632,8 +649,12 @@ Deviations from the plan above, and details it did not settle:
   - M3: onramps from baseline loop headers, with the onramp-root policy
     of §7;
   - M4 onward: as in MIR.md.
+
+  All of these are done. MIR.md §13 is their log.
 - **W. waffle's reducifier, driven by M3 data.** Nothing here starts
-  before M3 has produced real onramp-shaped MIR.
+  before M3 has produced real onramp-shaped MIR. **Done** (MIR.md §13,
+  W): measured, and no reducifier change was called for. The onramp
+  policy is `--mir-inner-onramp-bytes` (default 400).
   - Measure the reducifier on that output: duplicated blocks against the
     minimal partial iteration, the max-SSA cut's added params, and
     compile time.
@@ -648,6 +669,8 @@ Deviations from the plan above, and details it did not settle:
     - CFG-shape tests and differential checks with waffle's interpreter.
 
 ## 9. Consequences for MIR.md and M0
+
+(All applied: MIR.md rev 6 and M0b.)
 
 - **§0, §5, §9: GEN becomes baseline.**
   - Exits land by resume (§4), not by jumping to a GEN version.

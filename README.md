@@ -84,7 +84,7 @@ Block Versioning, but that did not converge well.)
 | `nightmonkey/` | The `nightmonkey` binary: snapshot in, AOT-compiled module out. The optional `wizen` Cargo feature also accepts programs and drives wizer as a library. |
 | `wasm-jit-runner/` | Wasmtime-based runner for the in-process flow: the `night_compile` hostcall runs the compiler over the shell's live heap and injects the bodies. |
 | `configs/` | Benchmark-lane mozconfigs for the SpiderMonkey tree (`mozconfig-native`/`-ion`/`-wasm`/`-weval`); the NightMonkey build itself uses `spidermonkey/mozconfig`. |
-| `docs/` | `DESIGN.md`, `INTEGRATION.md` (the SpiderMonkey hook surface), `TODO`. |
+| `docs/` | `DESIGN.md`, `MIR.md` and `MIR-MEMORY.md` (the optimizing tier), `BASELINE.md` (the baseline tier), `INTEGRATION.md` (the SpiderMonkey hook surface), `TODO`. |
 | `tools/` | Profiling and benchmarking helpers (`opprof.py`, `hotloop.py`, `pairab.sh`, ...). |
 
 ## Building

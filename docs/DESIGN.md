@@ -211,9 +211,13 @@ an early key identifies the layout being built.
 | Claim | Meaning | Use | Invalidation |
 |---|---|---|---|
 | identity | object has one compatible layout key | select a property layout | wholesale clear or restamp |
-| TYPES/SHALLOW | guarded fields retain their numeric type property | remove redundant numberness checks | a non-number protected-field store |
+| TYPES | each field of the layout holds a value of its predicted type (any tag set; shallow for objects) | typed, checkless field reads | an engine-path store (a compiled or vouched store of a conforming value keeps it) |
+| CLOSED | the object has no own property outside its layout's row | predicted prototype-method reads (`method.load`) | any property addition to the object |
 | SLOTS | properties occupy predicted slots | bake a fixed-slot offset | an unexpected in-prefix property addition |
 | RANGES | protected fields retain predicted intervals | propagate interval proofs | every unchecked engine store or an out-of-range compiled store |
+
+`docs/MIR.md` §4.3 and §4.6 describe how MIR consumes and maintains
+these claims.
 
 Correctness requires an invalidation cut across all mutation paths: engine
 stores call the NightMonkey store check; compiled stores perform equivalent
@@ -319,12 +323,14 @@ earley-boyer and raytrace 2-4%; it is off, pending the owner's call.
 
 ## 10. Generators, async, exceptions, and regexps
 
-Generator and async bodies compile in the baseline tier (with
-`NightGenerator.cpp`). Suspension stores locals and operands in an engine object
-using an AOT-owned layout; resume re-enters the same compiled script. An
-AOT-suspended generator cannot resume in the interpreter. Bodies that read
-their actuals after a yield remain unsupported, and resumable bodies do not
-receive MIR's optimistic specialization.
+Generator and async bodies compile in both tiers (with `NightGenerator.cpp`).
+Suspension stores locals and operands in an engine object using an AOT-owned
+layout; resume re-enters the same compiled script. In MIR, each yield's
+landing is a resume root that guards the restored frame back up to the types
+it had at the yield (`docs/MIR.md` §5.2, M5j). An AOT-suspended generator
+cannot resume in the interpreter. MIR declines bodies that read their actuals
+past their formals (a resume re-enters with none); baseline declines those
+that read them after the first suspend.
 
 Try notes feed CFG and frame construction. Calls and helpers propagate pending
 exceptions through the error result. MIR inlines only callees without handlers,

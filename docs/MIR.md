@@ -1,11 +1,33 @@
-# NightMonkey MIR: draft design (rev 6)
+# NightMonkey MIR: design (rev 7)
 
-Status: **draft for iteration**. M0 (the IR core) is implemented in
-`compiler/src/mir/`. See `mir-tier.md` for the motivation. Rev 6
-replaces GEN (the BBV `Dirty` track) with the baseline tier of
-`docs/BASELINE.md` as the deopt destination and onramp source.
-Optimizations that must work are in §10, decisions are logged in §12,
-and the implementation plan is `docs/BASELINE.md` §8.
+Status: **implemented.** MIR is NightMonkey's optimizing tier and the
+default pipeline (`--pipeline mir`; `--pipeline baseline` is the only
+alternative). The IR, validator, printer/parser and optimizer are in
+`compiler/src/mir/`. The builder (JSOps to MIR), inliner and lowering
+(MIR to waffle) are in `compiler/src/wasm/mir/`. The legacy
+basic-block-versioning backend (BBV, with its OPT and GEN tracks) that
+this design started from was removed in the commit that added MIR, so
+`--pipeline legacy` no longer exists.
+
+How to read this document:
+- §0–§11 are the design. Where the implementation differs from the
+  original text, the section says so in a dated **Status** or
+  **As built** note. Mentions of BBV, GEN or "legacy" are historical:
+  they describe the backend MIR replaced, or the measurements taken
+  against it.
+- §12 is the decision log, and §13 is the implementation log, milestone
+  by milestone. Its measurements are as of each entry's date.
+- Rev 6 replaced GEN with the baseline tier of `docs/BASELINE.md` as the
+  deopt destination and onramp source. Rev 7 brings the design sections
+  in line with what was built (§12).
+- Memory optimizations (LICM of reads, forwarding, scalar replacement,
+  partial escape, loop-carried caching) have their own design:
+  `docs/MIR-MEMORY.md`.
+- `KICKOFF-n` names a planning note from development. Each item is
+  described where it is cited. `nm-bench/…` scripts are in
+  `.claude/skills/nm-bench/`. Short commit hashes refer to the
+  development history, which was squashed into this repository's MIR
+  commit.
 
 ## 0. Summary
 
@@ -87,9 +109,11 @@ Wasm-level ops, and we lower *into* waffle.
 
   The builder extracts these from `LikelyFacts` and the translator's
   site tables. After that, nothing downstream reads `LikelyFacts`.
-- **The textual printer and parser** are part of the first milestone.
-  They are used for hand-written pass tests.
-- **The validator** checks:
+- **The textual printer and parser** (`mir/print.rs`, `mir/parse.rs`)
+  are used for hand-written pass tests (`mir/tests/*.mir`).
+- **The validator** (`mir/verify.rs`) runs after building and after
+  optimization. A script whose MIR fails it is compiled by baseline
+  alone, with the reason `BUG: invalid MIR` in `--dump-tiers`. It checks:
   - SSA dominance;
   - arity and subtyping on edges;
   - operand types for each op;
@@ -151,7 +175,11 @@ LayoutClaim := { keys: [lo,hi], types: bool, constructing: Option<…> }   (§2.
 
 ### 2.3 Constructors
 
-**Status (2026-09-28): built for inlined constructs.**
+**Status: built** for inlined constructs (2026-09-28) and standalone
+constructors (2026-09-29). Since M5t (§13), a construction state is a
+*set* of the layout's fields, `constructing(S)`, not a count. Since
+M5q, a constructor's leading `this.f = <formal>` stores are made with
+the object (`new_this.init`).
 
 - **Producer.** An inlined `new` whose allocation word carries the
   constructor's own early key restates `create_this`'s result as
@@ -191,7 +219,9 @@ LayoutClaim := { keys: [lo,hi], types: bool, constructing: Option<…> }   (§2.
   `this` is an untyped object, and the dynamic early publish of
   `ctor_publish` stamps it before calls once all its fields are there.
 
-The design as written:
+The original design follows. It is written with a count `n` of fields
+added, which M5t generalized to a set `S` (`prefix(n)` became
+`prefix(S)`, "at least those fields"):
 
 Constructors are in scope for v1. `this` in a constructor is `Obj{layout: {keys: K, constructing: n}}`.
 The object carries the CONSTRUCTING sentinel and has had the first `n`
@@ -232,6 +262,12 @@ lowering drops them. Initial kinds:
 Because facts are values, CSE, hoisting and dominance come for free.
 Fences kill them like any other type (§4).
 
+**Status: all four are built.** `check.fuse` covers fused literal
+globals (M4). `check.binding` and `check.binding.write` cover syntactic
+global reads and writes (M5j). `check.binding.fn` covers
+predicted-function globals (M5p). `check.native` covers the
+string-method and `Math` fast paths.
+
 ## 4. Invalidation, weakening, and GC
 
 ### 4.1 Fences
@@ -271,16 +307,27 @@ Fences kill them like any other type (§4).
 - An op with no dynamic effect report has a single `ok` edge carrying
   its kill pattern.
 
+**As built.** The dynamic effect report is the runtime's *stamp
+epoch*, not a flags word (§6). Every class-word demotion bumps it. A
+generic op or call takes `ok_clean` when the epoch did not move across
+it (`js_keep` in the builder). The builder usually ends `ok_dirty` in
+an exit at the next pc, carrying the op's result (`dirty_exit`; M5e),
+instead of re-guarding and rejoining. That keeps the clean path's facts
+without a re-guard on the hot path. Where the next pc's stack is not
+this op's result, the op fences instead. Its `Obj` slots are weakened
+to hints (`ObjHint`), and the next typed use guards again. The IR and
+validator support the re-guard-and-rejoin form, and
+`mir/tests/fence_rejoin.mir` tests it (§10.3).
+
 ### 4.3 Layout claims, stamp bits, and ICs
 
-**What today's backend does:**
+**What the legacy BBV backend did** (removed; kept here for contrast):
 - **Sites with a class/slot prediction:** a fused identity (+`SLOTS`,
-  +`TYPES`/`RANGES` for typed sites) stamp guard (`property.rs:541–800`).
-  On a miss, a side arm runs the inline IC, then continues at the next
-  PC in GEN (`Side` folds to `Dirty`).
-- **Sites without a prediction:** the IC runs inline in OPT. A hit, or a
-  clean miss (the "second chance" bit, `object.rs:10`), rejoins. Only a
-  dirty miss leaves OPT.
+  +`TYPES`/`RANGES` for typed sites) stamp guard. On a miss, a side arm
+  ran the inline IC, then continued at the next PC in GEN.
+- **Sites without a prediction:** the IC ran inline in OPT. A hit, or a
+  clean miss (the "second chance" bit), rejoined. Only a dirty miss left
+  OPT.
 
 **MIR: the three stamp components are treated differently.**
 
@@ -289,13 +336,13 @@ Fences kill them like any other type (§4).
 | identity (`keys`) | object has layout K | yes, killable | exit to baseline at the op's PC |
 | `TYPES` (+`RANGES`) | K's protected fields hold their predicted types (and ranges) | **yes, killable** | exit to baseline at the op's PC |
 | `CLOSED` | the object has no own property outside K's row (M5s) | **yes, killable** | the predicted-method read's IC arm |
-| `SLOTS` | K's fields sit in their predicted fixed slots | **no**: local to each op | the IC, staying in OPT |
+| `SLOTS` | K's fields sit in their predicted fixed slots | **no**: local to each op | the IC; then an exit at the next pc (M5e) |
 
 - **Identity and `TYPES` are part of what OPT means.**
   - `load_field` and `store_field` require a receiver of type
     `Obj{layout K, types}`. With local-first guarding (§8), the builder
     emits one `guard.layout K {types}` before each such op. Lowering
-    fuses it into a single masked stamp compare, as today.
+    fuses it into a single masked stamp compare, as BBV did.
   - **On failure, including a class-key miss, it exits to baseline** at the
     op's own PC, before anything observable has happened. Staying in
     OPT with an unexpected class would give up the type specialization
@@ -327,8 +374,14 @@ Fences kill them like any other type (§4).
     keeps `ok_clean`/`ok_dirty`/`err` successors. The add-slots check may
     clear `SLOTS` on a mispredicted add. That invalidates no type,
     because `SLOTS` is never in a type.
-  - SLOTS-miss receivers are therefore served in OPT, not regressed to
-    GEN as they are in today's backend.
+  - SLOTS-miss receivers were therefore meant to be served in OPT. BBV
+    sent them to GEN.
+  - **As built (M5e):** the IC arm reports dirty, and the typed access
+    exits at the next pc with its result (`DIRTY_EXITS`), so the clean
+    path keeps its facts. A receiver whose type proves the slot (a
+    dominating `guard.layout` with SLOTS) has no IC arm at all. Its
+    `load_field` becomes `load_slot` (`canon_loads`, MIR-MEMORY.md §1.1),
+    and its `store_field` becomes `store_slot`.
 - **Shallow `TYPES` for object-typed fields.** A valid `TYPES` bit on an
   object is shallow. It constrains what the parent's field holds, and
   says nothing about the child object's own `TYPES` bit: a deep meaning
@@ -342,9 +395,11 @@ Fences kill them like any other type (§4).
     => r : Obj{kind Plain}        (object-ness and kind: yes; layout K2: NO; types: NO)
   ```
 
-  This is after M5b (§4.6). Before it, object-ness is not maintained,
-  so the load yields a plain `Val` and a guard-at-def tag check makes it
-  `Obj` (exiting on failure), exactly as for an object argument.
+  **As built (M5b, §4.6):** a field's claim covers its tag set,
+  object-ness included, so the load yields `Val{object}` (or
+  `Val{null,object}`, …) with no tag check. The kind component is not
+  maintained yet, so `r` is an `Obj` of no known kind until a guard
+  proves one.
 
   To specialize loads *from* `r`, `guard.layout K2 {types}` must run
   first: one masked compare of `r`'s stamp word. With local-first
@@ -352,7 +407,9 @@ Fences kill them like any other type (§4).
   folding and hoisting (§10.1, §10.2) then share it across uses, and
   hoist it out of loops when `r` is invariant.
 - **Unpredicted sites** use `js.getprop`/`js.setprop` with the IC ladder
-  in lowering and clean/dirty edges, as today.
+  in lowering and clean/dirty edges, as BBV did. A read whose name no
+  known getter has is the split data read `getprop.data`, which exits
+  where the lookup would run code (MIR-MEMORY.md §9).
 - **Compiled stores never clear identity.** Only shape and proto
   mutation and generic engine paths can, and those are `js.*` or runtime
   ops, which are fences.
@@ -389,7 +446,11 @@ Fences kill them like any other type (§4).
     register if every edge has one, or every edge but a helper's slow
     path does (that path reloads it). Else it enters only in its slot.
     Each edge gets its own waffle block to reconcile locations; the
-    empty ones are removed.
+    empty ones are removed. (Amended 2026-10-04, M5x: where a loop can
+    GC only off its expected path, at IC misses, growth, slow
+    allocations and exits (`gc_only_off_path`), its header keeps
+    values in registers, and the exceptional edge reloads them from the
+    home slots.)
   - Every may-GC op's GC scan covers the whole rooting area, which the
     entry initializes. A slot that holds a dead value is not cleared: the
     value stays alive until the slot is reused or the activation returns.
@@ -415,7 +476,7 @@ Two different things can weaken killable state:
    fence kills a component *that the prediction also says may be
    invalidated*. The value runs with the component dead until its next
    use, whose local guard (§8) re-establishes it or exits. This is
-   today's lazy-class regime after a `CallGc`.
+   BBV's lazy-class regime after a `CallGc`.
 2. **Forbidden: a kill that contradicts the prediction.** Suppose MIR
    classifies an op as possibly invalidating something that likelier's
    model says it cannot. Examples: a generic op on values the prediction
@@ -447,7 +508,7 @@ They are the only prediction data MIR retains.
 - **Emission:** each field carries its full predicted type
   (`ClassFieldFacts::types`: every prim class plus the object bit; none
   where an unknown value may flow in), served as
-  `layout_field_types_in`. Legacy keeps its numeric masks.
+  `layout_field_types_in`.
 - **Maintenance:**
   - The engine store mask clears `TYPES` on every store
     (`kStoreClearMask = RANGES | TYPES`; `SLOTS` is left out).
@@ -478,11 +539,21 @@ They are the only prediction data MIR retains.
   every field's value in the image conforms. Before a call made during
   construction, `this` is stamped once all of its fields are there
   (`ctor_publish`: §2.3's `publish_layout`, dynamically).
-- **Not yet:** the object component (kind, script, singleton).
+- **Not yet:** the object component (kind, script, singleton). A
+  function-valued field's script still comes from a guard. The other
+  source of a typed function is a predicted method read (`method.load`,
+  M5s).
+- **Built differently from points 2 and 3 below.** Generic writes do not
+  clear unconditionally. The engine's store choke clears `RANGES|TYPES`
+  and leaves `SLOTS` alone. A vouched helper store, one whose value
+  conforms to the field's claim, keeps `TYPES` (the bullets above). The
+  legacy-OPT transition hazard went away when BBV was removed.
 
-The rest of this section is the design as written before M5b.
+The rest of this section is the design as written before M5b. Its
+"today" is September 2026, under BBV, and its file references are to
+code that has since changed.
 
-**Today (answering "gap in emission, or in the analysis?"): it is
+**Before M5b (answering "gap in emission, or in the analysis?"): it was
 emission plus runtime maintenance. The fixpoint analysis tracks
 everything.**
 
@@ -639,10 +710,12 @@ exit pc, this, [args…], [locals…], rval, [stack…]   -- any boxable reprs
   params are the resume word and the operands as they are. It boxes
   each once, writes the frame, and calls baseline (or returns DEOPT).
   An exit is a branch to its hub.
-- **The env slot is not an operand.** The env chain is fixed for the
-  whole activation, and the fresh entry writes it once: the callee's
-  environment, or the one `env_setup` makes (a call object, a named
-  lambda's scope). Ops that push a scope decline.
+- **The env slot is not an operand.** The fresh entry writes it once:
+  the callee's environment, or the one `env_setup` makes (a call
+  object, a named lambda's scope). Since M5i it is written through like
+  the locals. A scope's entry stores the new environment (`env.set`)
+  and its exit restores the parent (`env.pop`), so an exit finds the
+  current environment in the frame, as baseline expects.
 - **Resume rule:** an exit to an op's own PC is allowed only if no
   observable part of the op has happened. Otherwise it targets the
   successor PC, with the op's result on the stack.
@@ -656,20 +729,24 @@ exit pc, this, [args…], [locals…], rval, [stack…]   -- any boxable reprs
      that baseline caller, which resumes itself. A JS frame therefore
      never uses more than three native frames.
 
-  MIR places its GC rooting slots and callee frames *above* the whole
-  baseline frame (past its deepest operand stack). The frame itself
-  stays a set of valid Values:
-  - a fresh entry initializes it as baseline's prologue would;
-  - an onramp entry finds it valid, and clears the operand slots above
-    the header's depth.
-
-  The GC can therefore trace it at any time.
+  MIR places its GC rooting slots and callee frames above baseline's
+  fixed frame and locals, which always hold valid Values (a fresh entry
+  initializes them as baseline's prologue would). (Amended 2026-09-27,
+  M5e.) They overlap baseline's operand slots, which MIR never reads
+  while it runs: an onramp reads them before anything is spilled, and an
+  exit writes every one below its depth. So those slots are not
+  initialized, and a helper's GC scan stops at the spilled roots.
 - **Liveness pruning (implemented).** The builder computes the backward
   liveness of `this`, the formals, the locals and the rval over the
   bytecode. A slot dead at a block's entry takes no block param.
-- **Reserved extensions:** a parent-frame chain (for inlining) and
-  virtual-object recipes (for scalar replacement). v1's validator
-  rejects both.
+- **Reserved extensions, as resolved.** The design reserved a
+  parent-frame chain (for inlining) and virtual-object recipes (for
+  scalar replacement). Neither was needed:
+  - inlining gives each callee a real inline frame, and `exit.inline`
+    finishes only the callee in baseline (§5.5);
+  - a replaced object is rebuilt on the exit edge with ordinary
+    allocation ops (MIR-MEMORY.md §5.4), so exits have no recipe
+    operands.
 
 ### 5.2 Onramps and loop preheaders
 
@@ -699,7 +776,15 @@ exit pc, this, [args…], [locals…], rval, [stack…]   -- any boxable reprs
     `O`'s own params as the operands.
   - Which headers get an `O` is policy (BASELINE.md §7). Every
     outermost loop gets one. An inner loop gets one subject to the
-    code-size cost of §5.4.
+    code-size cost of §5.4. **As built:** an inner loop gets one only
+    when its outermost enclosing loop spans at most
+    `--mir-inner-onramp-bytes` bytes of bytecode (default 400), and
+    only when the function has no inlined callees (M5h).
+- **Generators** (M5j) add a third kind of root, `Resume { index, pc }`,
+  at each yield's landing. It takes the frame as `Val(⊤)` and guards it
+  up to the slot types at the yield. A resume's path re-enters its loop
+  at the header past the preheader. The validator allows that for blocks
+  a `Resume` root reaches, and the loop passes leave such loops alone.
 - **Lowering an onramp:**
   1. At a loop header, baseline calls the MIR body with its own `sp`
      and `ARGC_ONRAMP_BIT`, with the header named in the resume word.
@@ -751,12 +836,16 @@ so it side-enters each of them.
   picks as header. The choice only decides which fragment of one
   iteration is duplicated.
 - The cost is measured on real MIR after M3 (BASELINE.md §8, step W)
-  before any change to waffle is considered.
+  before any change to waffle is considered. **Measured** (§13, W): no
+  reducifier change was called for. With inlining, inner-loop onramps
+  are dropped instead (§5.2).
 
 ### 5.5 Inlining
 
-bbv inlines by splicing the callee's bytecode into the caller's pc space.
-Its guard failures inside the splice fall to GEN copies of the callee's
+**Status: built** (M5c, with admission limits in M5h and M5j; §13).
+
+BBV inlined by splicing the callee's bytecode into the caller's pc space.
+Its guard failures inside the splice fell to GEN copies of the callee's
 blocks in the same wasm function. MIR has no GEN copies. Its exits resume
 baseline, and baseline has one body per script. The design:
 
@@ -815,11 +904,11 @@ baseline, and baseline has one body per script. The design:
     compactly as `(name, [lo, hi])`, with an overlap test.
   - `Elements(RegionRoot)` and `ArrayLength(RegionRoot)`: from the
     analysis's array class regions, proven by the receiver's stamp.
-    Array stamp keys grow down from `0x7FFE` (`wasm/mod.rs:1545`).
-    Today only arrays in a claiming population are stamped. As part of
-    v1, the analysis will **stamp every array class region**, with or
-    without an element claim, so that element accesses get alias
-    regions.
+    Array stamp keys grow down from `0x7FFE`. Only arrays in a claiming
+    population are stamped. The plan to **stamp every array class
+    region**, with or without an element claim, so that element
+    accesses get alias regions, is **not built** (M5r found deltablue's
+    `new Array()` unstamped for this reason).
   - `TypedArrayData(kind)`, `TypedArrayLength`.
   - `Global(binding)`.
   - `Env(scope, slot)`.
@@ -845,13 +934,41 @@ baseline, and baseline has one body per script. The design:
   a may-run-JS op is both.
 - **Load/store forwarding, redundant-load elimination, dead-store
   elimination and LICM** are classical passes over these descriptors.
-- **Flags word:** each op's effect maps to `FLAG_MUT_THIS`/`OTHER`/
-  `STAMPS`/`BIND` bits, or to "the callee's returned flags" for calls.
-  The lowering threads the accumulator as a constant where possible and
-  dynamically otherwise, and returns it at `return`. It is never an MIR
-  value.
+- **Flags word (design; not built):** each op's effect maps to
+  `FLAG_MUT_THIS`/`OTHER`/`STAMPS`/`BIND` bits, or to "the callee's
+  returned flags" for calls. The lowering threads the accumulator as a
+  constant where possible and dynamically otherwise, and returns it at
+  `return`. It is never an MIR value.
+- **As built:** every MIR and baseline body returns `FLAGS_ALL` as its
+  effect word. Clean versus dirty comes from the stamp epoch instead
+  (§4.2): the lowering compares the epoch before and after a helper or
+  call, and a moved epoch means some class word was demoted.
+- **As built, the regions** are the abstract locations of MIR-MEMORY.md
+  §1 (`mir::module::Region`), and `mem_vn`, `licm`, `promote` and the
+  escape passes consume them.
 
 ## 7. Opcode set
+
+This is the opcode set as designed. The implemented set is the
+`Opcode` enum in `mir/ops.rs`, with its text mnemonics in
+`mir/print.rs`. Beyond the list below it has:
+- typed memory: `load_slot`/`store_slot` (MIR-MEMORY.md §1.1);
+- construction: `guard.ctor`, `create_this`, `new_this`,
+  `new_this.init`, `lit.new`/`lit.init`, `stamp.fresh`, `ctor.stamp`,
+  `ctor.publish`, `restamp`, `object.lit`;
+- guards: `guard.range` and `int.to_i32`;
+- globals and methods: `check.binding.write`, `check.binding.fn`,
+  `method.load`;
+- generic ops split by whether they can run code: `getprop.data`,
+  `setprop.data`, `getelem.data`, `setelem.data`, `prim.*`
+  (MIR-MEMORY.md §9);
+- frames and inlining: `frame.store`, `inline.enter`, `exit.inline`,
+  `gen.suspend`;
+- arguments, environments and iteration: `args.*`, `env.*`, `iter.*`,
+  `call.iter`, `call.eval`, `js.apply_fwd`;
+- `switch.str`;
+- `js.rt.*`, the generic leaves over baseline's helpers that make the
+  builder total over JSOps.
 
 **(T)** marks a terminator. Every **(T)** fallible op has `ok` and
 `fail` targets. Ops that can throw also have `err`.
@@ -901,7 +1018,7 @@ baseline, and baseline has one body per script. The design:
 - `*.cmp.<cc> → Bool`
 - `math.<fn>`
 
-**Generic JS ops** on `Val` operands, lowered to today's helpers,
+**Generic JS ops** on `Val` operands, lowered to the runtime's helpers,
 including the inline-cache ladders:
 
 - `js.add`, `js.binop`, `js.compare`, `js.typeof`, `js.tobool`,
@@ -918,12 +1035,13 @@ where the helper reports cleanliness.
 - `load_field recv:Obj{layout K, types}, name` (T: `ok_clean`,
   `ok_dirty`, `err`): lowering tests `SLOTS` locally, then does the
   direct slot load or the IC (§4.3). The result has the field's claimed
-  type. For object-typed fields that means class identity but not
-  `types` (shallow). Attachments carry the slot and the IC cell.
+  type. For object-typed fields that means object-ness, not class
+  identity or `types` (shallow; §4.3, §4.6). Attachments carry the slot
+  and the IC cell.
 - `store_field recv:Obj{layout K, types}, name, v:<claimed type>` (T:
   `ok_clean`, `ok_dirty`, `err`): tests `SLOTS` locally, then does the
   direct store or the set IC. Barriers and the add-slots check stay as
-  today, and the store choke is elided. It is not a fence (§4.3).
+  in BBV, and the store choke is elided. It is not a fence (§4.3).
 - `init_field`, `publish_layout` (§2.3)
 - `new_object K`, `new_array n`
 - `load_elem`, `store_elem` on `Obj{Array|Native}` with an `I32` index:
@@ -968,8 +1086,8 @@ with the operand stack and locals as SSA values:
     still valid. Guard folding and hoisting (§10.1, §10.2) merge guards
     in a principled way, and the validator (§4.1) guarantees the merged
     result is sound.
-  - Tag and prim guards are not killable, so they follow guard-at-defs
-    as today.
+  - Tag and prim guards are not killable, so they follow guard-at-defs,
+    as in BBV.
   - **One rule for every object-typed value, whatever its source**
     (argument, `this`, field load, element load, call result, global,
     env slot):
@@ -990,12 +1108,16 @@ with the operand stack and locals as SSA values:
   carries on the `ok_clean` edge, and rejoins the clean path. The join
   therefore stays as strong as the clean path, and downstream guards can
   still fold against it. A failed re-guard exits at `pc_after`. This
-  replaces today's call-return onramp without a trip through baseline.
+  replaces BBV's call-return onramp without a trip through baseline.
+  **As built**, the dirty edge exits at `pc_after` directly where the
+  stack allows, and otherwise fences with hints (§4.2).
 - Explicit `box`/`weaken` upcasts before every `exit` and `exit.throw`.
 - A guard-at-defs policy against the per-PC prediction: OPT state at a
   PC boundary must be at least as strong as the prediction in its
-  OPT-defining components (§4.5), as it is today. A value that fails its
-  guard exits. The builder asserts this at every boundary.
+  OPT-defining components (§4.5), as it was in BBV. A value that fails
+  its guard exits. (The design had the builder assert this at every
+  boundary. No such assertion was built. The validator's boundary check
+  covers exit arity only.)
 - A prediction witness attached to every op with an effect (§4.5).
 - Generic `js.*` ops for unpredicted operations.
 
@@ -1018,16 +1140,34 @@ For each script:
 ## 10. Optimizations that must work
 
 This section lists the mechanisms we must build and demonstrate, not
-just believe in. Each item gets:
+just believe in.
+
+**Status: all built except dead-store elimination (§10.5).** The
+optimizer is `mir::opt::optimize`, a fixpoint over the passes named in
+each subsection, then `pea`, `promote` and `sink_to_exits` once each
+(MIR-MEMORY.md §11). Textual before/after tests are in
+`mir/tests/*.mir` and `mir/tests/mod.rs` (the §10.3 case is
+`fence_rejoin.mir`). End-to-end tests are in `tests/jit-test/night/`.
+Most of them are shown to fail against a mutant of the transformation
+they cover (§13 names the mutants). Dynamic counts
+come from `--guard-census`, `--mir-exit-census` and `--value-census`.
+
+Each item gets:
 - textual before/after MIR tests;
-- an end-to-end test whose **dynamic guard counts** (today's guard
-  census, reused) show the expected reduction.
+- an end-to-end test whose **dynamic guard counts** (the guard
+  census, `--guard-census`) show the expected reduction.
 
 Local-first guarding (§8) is only acceptable because §10.1 and §10.2
 exist, so those two land together with the ops that create the guards
 (M4).
 
 ### 10.1 Guard folding (GVN on guards)
+
+**Built:** `opt::fold_guards` (M4, M5e, M5j, M5p). Guards are keyed by
+their operand up to `unbox`. A guard folds into an available guard of
+the same kind whose output implies it. `check.binding` folds only into
+a check that implies it (`BindingCheck::implies`). `method.load` folds
+like a guard (M5s).
 
 - **The problem.** Guards are terminators, so merging two of them is
   *branch folding*, not value numbering.
@@ -1062,12 +1202,18 @@ exist, so those two land together with the ops that create the guards
 
 ### 10.2 Guard hoisting into the preheader (LICM for guards)
 
+**Built:** `opt::hoist_guards` (M5j). Also `opt::hoist_reads`, which
+hoists a loop-invariant read diamond, and `opt::licm`, which hoists
+pure ops and reads (MIR-MEMORY.md §2, §9). As built, the
+"dominates all latches" rule is judged on the loop as it would be with
+every hoistable guard hoisted (a greatest fixpoint, M5j).
+
 A guard inside a loop is hoisted to `P` when all of these hold:
 - its operand is loop-invariant (defined outside the loop, or a header
   param passed unchanged along every latch);
 - no fence in the loop kills its fact;
-- it dominates all latches (today's `licm.rs` rule, to avoid
-  speculating guards that were conditional).
+- it dominates all latches (BBV's LICM rule, to avoid speculating
+  guards that were conditional).
 
 Its `fail` edge is re-anchored to `exit header_pc, P.params`. This is
 correct because nothing in `P` has done any observable work of the
@@ -1090,12 +1236,21 @@ Also covered here:
 
 ### 10.4 Box, unbox and weaken cleanup
 
+**Built:** `opt::fold_unbox` (`unbox` of a `box`, through `weaken`s)
+and `opt::sink_to_exits` (M5p). The sinking covers a `box` of a value no
+fence can weaken, and `global.object`.
+
 - `unbox(box x) → x`.
 - Chains of `weaken` collapse.
 - A `box` whose only users are exits is sunk into the exit blocks, so
   the hot path doesn't box values that are only needed for deopt.
 
 ### 10.5 Memory: forwarding, RLE, DSE
+
+**Built:** forwarding and RLE, as `mem::mem_vn` (memory versions,
+MIR-MEMORY.md §3.1–§3.2). Alongside them, `mem::sroa`, `pea` and
+`promote` do scalar replacement, partial escape and loop-carried
+caching. **Not built:** dead-store elimination (MIR-MEMORY.md §3.3).
 
 These run over alias regions (§6):
 - **Store-to-load forwarding:** `store a.x v; load a.x → v`.
@@ -1105,9 +1260,19 @@ These run over alias regions (§6):
 
 Memory knowledge survives an `ok_clean` edge. A clean flags word means
 no mutation beyond the op's own declared access. It dies at `Unknown`
-stores and may-run-JS fences.
+stores and may-run-JS fences. **As built**, this does not hold. A clean
+edge means only that the stamp epoch did not move, and a getter can
+write a field without moving it. So memory knowledge does not cross a
+generic op. Precise effects come from typed ops and from the split
+`*.data` ops instead (MIR-MEMORY.md §0, §9).
 
 ### 10.6 Numeric
+
+**Built:** range narrowing (`narrow_ints`, `onramp_ranges`,
+`fold_ints`), truncation demand (`trunc_demand`), and wrapped sums
+recomputed at exits (`recover_at_exits`) (M4, M5x, M5y). Representation
+selection is the builder's block-entry fixpoint (M2): an int32 local
+stays an `I32` block param.
 
 - Remove overflow checks using ranges.
 - Rewrite `.ovf` to `.wrap` under `ToInt32` demand.
@@ -1120,16 +1285,27 @@ stores and may-run-JS fences.
 "Declined" means that **a script is compiled by baseline alone when the
 MIR builder meets one of these** (under `pipeline=mir`; BASELINE.md §5):
 
+- a global (top-level) script;
+- a script over 32 KiB of bytecode, or a function past 60,000 MIR
+  instructions after inlining (`MAX_MIR_INSTS`);
 - a generator or async body that reads its actuals past its formals (a
-  resume re-enters with none)
+  resume re-enters with none);
+- MIR that fails the validator (`BUG: invalid MIR`), or an op the
+  lowering lacks (`lowering: …`). Both are bugs, and
+  `nm-bench/declines.sh` counts them.
 
 (Generator and async bodies, `arguments` and rest, `with`, direct eval
 and the environment ops were on this list; they compile now: M5d, M5i,
-M5j.)
+M5j.) The builder still declines, by name, any op it has no case for.
+It also declines a few operand shapes, such as an `InitElemInc` or
+`GetActualArg` index that is not int32. The M5i censuses left no such
+op in the jit-tests. Since M5n, MIR compiles every Octane script but the global
+scripts and four of mandreel's, which are too large.
 
-Try/catch is supported (§5.3). There is no hidden decline for inlining.
-The MIR builder does not inline anything, so calls in a MIR-compiled
-script are always real calls.
+Try/catch is supported (§5.3). Calls are inlined under the limits of
+§13 (M5h, M5j). A call that is not inlined is a real call, made
+directly where the callee is known. A script that is not
+inline-eligible (§5.5) is not declined; it is only never spliced.
 
 ## 12. Decision log
 
@@ -1161,7 +1337,7 @@ script are always real calls.
 - Loop-header types carry class claims.
 - Stamp every array class region.
 - Exits store every local and arg, and liveness pruning comes later if
-  needed.
+  needed. (Both since done: liveness pruning, then write-through, §5.1.)
 
 **Rev 5**
 - Optimizations that must work (§10) are an explicit deliverable, with
@@ -1186,7 +1362,8 @@ script are always real calls.
   generic writes clear `TYPES`/`SLOTS`/`RANGES` unconditionally, so
   `TYPES` is exact and loads are checkless.
   An object claim carries only immutable components; a child's layout
-  identity is guarded at first use.
+  identity is guarded at first use. (As built, maintenance differs; see
+  §4.6's status.)
 - `ok_dirty` re-guarding stays eager (up to the clean edge's types).
   Heuristics can come later.
 
@@ -1222,15 +1399,45 @@ script are always real calls.
 - `exit`/`exit.throw` carry the rval. `Val(⊤)` includes magic values.
 - MIR does not maintain a baseline frame while it runs. It uses the
   NightStack only for GC rooting, and writes the whole frame at an exit.
+  (Superseded 2026-09-27: formals, locals and rval are written through,
+  §5.1. The env slot followed in M5i.)
 - `docs/MIR-GEN-SEAM.md` is retired.
+
+**Rev 7 (as built, 2026-11)**
+- BBV, its OPT/GEN tracks and `--pipeline legacy` are removed. MIR over
+  baseline is the default pipeline.
+- The frame is written through (§5.1): formals, locals, the rval and,
+  since M5i, the env slot. An exit stores only `this` and the operand
+  stack.
+- Clean versus dirty is the stamp epoch, not a flags word (§4.2, §6).
+  Bodies return `FLAGS_ALL`.
+- A dirty edge exits at the next pc where it can, instead of
+  re-guarding and rejoining (§4.2, §8). A typed access's IC arm is
+  dirty (§4.3).
+- A clean edge protects types, not memory (§10.5).
+- Inlining is built as §5.5 designed. Admission follows BBV's limits
+  (M5j), and only outermost loops get onramp roots in a function with
+  inlined callees (§5.2).
+- Construction states are field sets (§2.3, M5t). `CLOSED` is a fourth
+  stamp component (§4.3, M5s).
+- Not built: the flags word, stamping every array class region (§6),
+  the field claims' object component (§4.6), dead-store elimination
+  (§10.5).
 
 ## 13. Implementation plan
 
-Each milestone ends with a test gate. MIR is enabled per script behind
-an option (`Options`), and the legacy path remains the fallback when
-the builder declines. Diagnostics report per-script MIR/legacy/decline
-counts, with reasons, so that coverage is measured rather than assumed
-(DESIGN.md §12).
+Each milestone ends with a test gate. MIR is selected by
+`Options::pipeline` (`--pipeline mir`, now the default), and baseline
+alone compiles a script the builder declines. `--dump-tiers` reports
+which tier compiled each script and why the builder declined, so that
+coverage is measured rather than assumed (DESIGN.md §12).
+
+**Status: M0 through M5ab are done.** The entries below are the log.
+Each says what was built and measured, as of its date. Later entries
+supersede earlier ones where they say so. M6 (§10's remainder) is done
+except dead-store elimination. Its pieces landed under M5x, M5y and
+MIR-MEMORY.md. Comparisons against "bbv" or "legacy" are against the
+removed BBV backend.
 
 **M0. IR core** (`compiler/src/mir/`)
 - Entities, the type lattice with subtyping and join, the op
@@ -1319,10 +1526,11 @@ declines for everything else).
     the op. Every `js.*` op's `err` goes to its pc's throw block. Both
     blocks are shared per pc.
   - **Loops** get a preheader, and the builder declares them.
-  - **Declined:** global scripts, generators and async functions, class
-    constructors, scripts that read their actuals, scripts with an env
-    chain, and any op outside the subset. That includes
-    `Uninitialized`: MIR has no constant for the TDZ sentinel yet.
+  - **Declined** at this point: global scripts, generators and async
+    functions, class constructors, scripts that read their actuals,
+    scripts with an env chain, and any op outside the subset. That
+    includes `Uninitialized`: MIR had no constant for the TDZ sentinel
+    yet. (All but global scripts were lifted by M4a–M5j; §11.)
   - **The stress mode** is `--mir-stress N`. Every lowered guard also
     fails on every `N`th guard executed program-wide (a runtime counter,
     `night_runtime_mir_stress`).
@@ -1354,8 +1562,8 @@ declines for everything else).
   loops.
 - **Done:**
   - **Roots.** Every loop header that has a preheader gets an onramp
-    root. The root re-deopts at the header with its own params, and the
-    policy knob is still to come.
+    root. The root re-deopts at the header with its own params. (The
+    policy knob came with W.)
   - **Entry.** The MIR entry dispatches on `ARGC_ONRAMP_BIT` by the
     resume word, and loads the root's params from the frame. It pads
     the formals only on a fresh entry.
@@ -1364,9 +1572,9 @@ declines for everything else).
   - The baseline side is in `BASELINE.md` §7.
   - **waffle fix.** Onramps into nested loops made waffle's reducifier
     fail. `resolve_aliases` left aliases in terminator operands, which
-    the duplication did not remap. That is fixed in waffle (branch
-    `cfallin/resolve-aliases-terminators`), which the workspace uses
-    through `[patch.crates-io]` until a release.
+    the duplication did not remap. That is fixed in waffle, first on a
+    branch through `[patch.crates-io]`, and now released. The workspace
+    depends on waffle 0.3.3 from crates.io.
   - **Tests.** `tests/jit-test/night/mir-onramps.js` covers re-entry,
     re-deopt, nested and triply nested loops, and loop-carried values
     of every representation. It and the jit-test lane pass under the
@@ -1388,7 +1596,10 @@ the numbers call for it.
   same as no limit.
 - **No reducifier change is called for.** The one waffle change so far
   is the alias fix M3 needed. MIR's coverage is still the M2 subset,
-  so re-measure once M4 widens it.
+  so re-measure once M4 widens it. (With inlining, inner-loop side
+  entries duplicated inlined code past wasm's function size limit, so
+  M5h gives such functions outermost onramps only. waffle is still
+  unchanged there.)
 
 **M4. Objects and calls**
 - `guard.layout {types}`, and `load_field`/`store_field` with the local
@@ -1436,9 +1647,9 @@ the numbers call for it.
     module does not describe is a `hole` (`Layout.fields` is
     `Vec<Option<FieldDef>>`).
   - `types` is asked for only where the claim is a number and the
-    site's receivers can carry the bit: TYPES maintains numberness only
-    (§4.6). An int32-only claim is then one `guard.unbox.i32` on the
-    loaded value.
+    site's receivers can carry the bit: TYPES maintained numberness only
+    at this point (§4.6; M5b extended it). An int32-only claim is then
+    one `guard.unbox.i32` on the loaded value.
   - A `SetProp` of a number into a number-claimed field becomes
     `store_field`. A number over a number needs no barriers and keeps
     TYPES.
@@ -1469,8 +1680,9 @@ the numbers call for it.
     helper: the CONSTRUCTING sentinel with our early key or none, a
     slot span covering the layout, then the idx plus the surviving
     validity bits;
-  - restamps (init delegates, fill scripts) are bbv-only still.
-- **TYPES only on all-number layouts.** Outside bbv every store goes
+  - restamps (init delegates, fill scripts) were bbv-only still. (MIR
+    restamps since M5d: `restamp`.)
+- **TYPES only on all-number layouts** (superseded by M5b). Outside bbv every store goes
   through the engine or MIR, and the engine drops TYPES on any
   non-number store to any field. So a constructor that stores one
   object field loses the bit for all of them. `types` is now requested
@@ -1520,7 +1732,9 @@ the numbers call for it.
     slot the way names, when the object's word has no RANGES and, for a
     value that is not a number, no TYPES. Barriers are as for
     `store_field`. A miss calls `set_prop_ic_miss`.
-  - The transition (add) and megamorphic set arms stay bbv-only.
+  - The transition (add) and megamorphic set arms stayed bbv-only here.
+    (The add-transition replay came in M5d. Dynamic-key adds came in
+    M5w and M5ab.)
 - **Inline dense element overwrite.** `js.setelem` stores an in-bounds,
   non-hole dense element inline when the elements are not frozen and the
   word has no RANGES, with the element barriers.
@@ -1536,7 +1750,7 @@ the numbers call for it.
     runtime's leaf store (with its barriers); `CheckAliasedLexical` is
     `CheckLexical`'s guard; `Lambda` is `js.lambda` over the env;
   - scopes that push environments (`PushLexicalEnv` and the rest) still
-    decline.
+    declined (until M5i).
   Non-fused `GetGName` results are likewise guarded at the def against
   `gname_types`. navier-stokes, whose hot code reads closure variables,
   goes from 3987 to 11200.
@@ -1550,13 +1764,21 @@ the numbers call for it.
 
 **M5. Remaining v1 coverage**
 - Elements and typed arrays, including array stamping in the analysis.
-- Globals: fused literals are done; syntactic bindings (`gcell`) remain.
-- Constructors (`init_field`/`publish_layout`).
-- Environment ops.
-- Accurate flags words.
-- Liveness-pruned exits, if needed.
+  **Done** (M5e, M5f), except stamping every array class region (§6).
+- Globals: fused literals, then syntactic bindings. **Done** (M4, M5j,
+  M5p).
+- Constructors (`init_field`/`publish_layout`). **Done** (§2.3).
+- Environment ops. **Done** (M4, M5i).
+- Accurate flags words. **Not built**: the stamp epoch serves instead
+  (§6).
+- Liveness-pruned exits, if needed. **Done** (§5.1).
 
 **M5b. Richer field claims (§4.6)**
+
+**Done (2026-09-27),** as §4.6's status describes. Not built: the
+immutable object component, and the unconditional generic clear. The
+legacy-OPT item became moot with BBV's removal. Demotions are counted
+(`DemotedForMir`). The plan:
 - Emission of per-field tag sets and immutable object components from
   the analysis's view cells.
 - Generic writes clear `TYPES|SLOTS|RANGES` unconditionally: the engine
@@ -1578,6 +1800,7 @@ methods, and MIR calls them, paying `night_call_classify` and a
   builder's `inline_call`. Callees must be at most
   `INLINE_MAX_BYTECODE` (200) bytes and at most 800 MIR instructions.
   Nesting goes at most 2 deep, and a site takes at most 4 targets.
+  (Limits since revised: M5h, M5j.)
 - The `guard.script` check is inline: a function class, the script
   slot, and a compiled script. Unpredicted property reads have way 0 of
   their IC inline: the own fixed slot, then the prototype holder.
@@ -1820,8 +2043,9 @@ guard hoisting (2026-09-28).**
   uses `arguments`, mapped formals or actuals; no call site in a catch
   or finally range; bbv's splice fuel, at ~4 waffle values per MIR
   instruction (25000 instructions, 60000 for callees of at most 160
-  bytes). MIR's own callee and per-function instruction budgets are
-  gone. Richards' `Scheduler.schedule` now splices `TaskControlBlock.run`
+  bytes). MIR's own callee and per-function inlining budgets are gone.
+  The 60,000-instruction cap on a whole function stays, sending a
+  function past it to baseline (§11). Richards' `Scheduler.schedule` now splices `TaskControlBlock.run`
   and the task `run`s under it as bbv does.
 - **`length`** (§7): a proven string's `length.string`; a receiver the
   builder has evidence is an array (a native object its element accesses
@@ -2520,15 +2744,16 @@ traced pc; `--stats` counts contexts per script):
   while the slot still held the fake worker alone: a write dropped for an
   `AnyObject` receiver is not monotone (a receiver that grows writes
   nowhere), so the result depends on evaluation order.
-- **Literal-keyed contexts (step 1) built and measured**
-  (`LITERAL_CTXS`, `Ctxs::push_lit`): a call passing string literals
+- **Literal-keyed contexts (step 1) built and measured; not landed**
+  (`LITERAL_CTXS`, `Ctxs::push_lit`, neither in the tree): a call passing string literals
   enters its callee in a root keyed by (callee, literals), parented at the
   generic context, never charged to the budget (pdfjs 270 roots, react
   314, mandreel 478). `send`'s roots are each action's (data its own
   literal), `on`'s each registration's; but they cannot carry pdfjs past
   `send`, for the reasons above, and alone they leave the budget spent.
-- **Per-script bounds** (`CTX_PER_SCRIPT` 128 contexts and
-  `CTX_SCRIPT_WORK` 32,768 instantiated constraints per script): no bench
+- **Per-script bounds, measured; not landed** (`CTX_PER_SCRIPT` 128
+  contexts and `CTX_SCRIPT_WORK` 32,768 instantiated constraints per
+  script; see the next item for why): no bench
   spends the budget; analysis time crypto 9.5 -> 0.6 s, react 3.7 -> 3.5
   s, pdfjs 2.3 -> 4.3 s, mandreel 2.4 -> 3.8 s. A work budget alone (3M
   instantiated constraints) and lower depth caps (4..6) were tried first:
@@ -2646,8 +2871,21 @@ profile (`prof.sh react`, 4c0dcb1) and the value census:
 **M6. The rest of §10**: box/unbox cleanup, memory optimizations, and
 numeric optimizations, each with its guard-count and instruction-count
 tests.
+- **Done, except dead-store elimination.** Box/unbox cleanup is
+  `fold_unbox` (MIR-MEMORY.md §8) and `sink_to_exits` (M5p). The
+  memory optimizations are MIR-MEMORY.md §8–§11: `load_slot`, LICM of
+  reads, `mem_vn`, typed literals, `sroa`, the split `*.data` ops,
+  `hoist_reads`, `new_this`, `pea` and `promote`. The numeric ones are
+  M5x and M5y.
 
-After M6, work moves to the remaining optimization passes (representation selection,
-numeric demand, memory optimizations, LICM, inlining, scalar
-replacement). Once MIR's coverage and performance match the legacy
-path, BBV can be deleted.
+The plan ended: "Once MIR's coverage and performance match the legacy
+path, BBV can be deleted." BBV was deleted with MIR's landing. What
+remains open is recorded in place:
+- dead-store elimination and frame-store sinking (MIR-MEMORY.md §3.3);
+- literals filled by later adds (MIR-MEMORY.md §4);
+- partial escape of constructed objects (MIR-MEMORY.md §6, §11);
+- the field claims' object component (§4.6);
+- stamping every array class region (§6);
+- retention on exits (M5p);
+- the analysis precision items of M5aa;
+- react's remaining costs (M5ab).

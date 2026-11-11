@@ -1,17 +1,32 @@
 # MIR memory optimizations: LICM, alias analysis, DSE, escape analysis, SROA
 
-Status: **design, 2026-09-30.** Extends MIR.md §6 (effects and memory)
-and §10.2/§10.5 (hoisting, forwarding, RLE, DSE), and fills the "virtual
-object recipes" reservation of §5.1. Decisions taken with the owner are
-marked **(decided)**.
+Status: **mostly implemented.** This document was written as a design
+on 2026-09-30. §8, §9 and §11 record what landed. Its steps:
 
-## 0. Where MIR stands
+| step | status |
+|---|---|
+| M0 `load_slot`, precise per-edge effects | done (`opt::canon_loads`, `canon_stores`) |
+| M1 LICM of reads and managed values | done (`opt::licm`) |
+| M2 memory versions, RLE, forwarding, box/unbox and constant folding | done (`mem::mem_vn`, `fold_unbox`, `fold_ints`). Loads are not forwarded through merge versions |
+| M3 DSE with sinking into exits; frame-store sinking | **not built** |
+| M4 typed literal allocation | done for stamped literal sites (`lit.new`/`lit.init`). Literals filled by later adds are **not built** |
+| M5 escape analysis, SROA, rematerialization | done for literals (`mem::sroa`), plus partial escape (`pea`, §11) and loop-carried caching (`promote`, §11) |
+| M6 typed `create_this`; SROA of constructs | typed allocation done (`new_this`, `new_this.init`; §10, MIR.md M5q). SROA and partial escape of constructed objects are **not built** |
+
+The op names used in the design (`new_object`, `init_slot`) were built
+as `lit.new` and `lit.init`. The document extends MIR.md §6 (effects
+and memory) and §10.2/§10.5 (hoisting, forwarding, RLE, DSE), and fills
+the "virtual object recipes" reservation of §5.1. Decisions taken with
+the owner are marked **(decided)**.
+
+## 0. Where MIR stood (2026-09-30, before this work)
 
 - `opt::licm` hoists non-terminator ops that are pure or read only regions
   nothing in the loop writes. `opt::hoist_guards` hoists guards.
   `opt::cse_loads` forwards a field load from an earlier load or store
   through the same SSA object, killed by any write to that field *name*
-  in any class. There is no DSE, escape analysis or scalar replacement.
+  in any class. (`mem_vn` has since replaced it.) There is no DSE,
+  escape analysis or scalar replacement.
 - Three things keep those passes from finding much:
   1. **`load_field` is a terminator** (`ok_clean`/`ok_dirty`/`err`) with
      effects `may_gc`, `may_throw`, kill ALL, whatever its receiver. With
@@ -277,7 +292,8 @@ A/B over placements with code size (`--stats`) reported next to scores.
 
 ## 8. Status (2026-09-30, end of the first session)
 
-Built (commits b06648e and after; MIR.md M5o has the measurements):
+Built (development commits b06648e and after, now squashed into the MIR
+commit):
 
 - **M0** `load_slot`, and `canon_loads` dropping the load's retaining
   frame stores.
@@ -287,10 +303,14 @@ Built (commits b06648e and after; MIR.md M5o has the measurements):
   predecessors). Not `box`/`weaken`: hoisting them lengthened live
   ranges for nothing (crypto -4%).
 - **M2** `mem::mem_vn` (memory versions, numbering, forwarding, the
-  fresh-allocation clobber walk). Not yet: phi versions, DSE (**M3**).
+  fresh-allocation clobber walk). Not yet: forwarding through phi
+  versions, DSE (**M3**). (Since 2026-10-04, MIR.md M5x: a block's entry
+  versions are recomputed from its predecessors' edges, so reads in one
+  loop iteration match across a store elsewhere in the loop. DSE is
+  still not built.)
 - **M4, first part** `lit.new`/`lit.init` for stamped literal sites. Not
   yet: literals filled by later adds (the owner's `{}` then `o.x = ...`;
-  the analysis gives such a literal no row).
+  the analysis gives such a literal no row). (Still not built.)
 - **M5** `mem::sroa` for `lit.new` objects, with the optimistic escape
   check (the allocation's own guards pass, so their failures' uses do not
   count) and rebuilds before `exit`, `exit.throw` and `exit.inline`;
@@ -313,7 +333,7 @@ Lessons:
 - The validator declines invalid MIR to baseline silently
   (`BUG: invalid MIR` in `--dump-tiers`): an early `fold_unbox` that
   reused a pre-fence value declined 87 scripts with every lane passing.
-  `~/work/nm-mir-scratch/prof8/bugcheck.sh` counts them over the suite.
+  `.claude/skills/nm-bench/declines.sh` counts them over the benchmarks.
 - A pass that substitutes a value must not extend one with killable type
   components past a fence (`gvn`'s and `fold_unbox`'s rule).
 
@@ -393,8 +413,8 @@ Lessons:
   an `.apply` that is not the builtin, exits instead of forwarding
   generically, so no generic op sees the object under construction.
 
-What blocks SROA of them (`prof8/ctorscan.py` over raytrace's MIR: all
-41 inlined constructs escape): the object reaches `exit.inline`s on cold
+What blocks SROA of them (a scan over raytrace's `--dump-mir`: all 41
+inlined constructs escape): the object reaches `exit.inline`s on cold
 paths of the inlined body (a `getprop.data` that fails inside the
 wrapper), and `exit.inline` *returns to MIR*: its continuation keeps
 using the object, which baseline may have changed (or stored) meanwhile.
@@ -474,7 +494,8 @@ than the accesses they replace.
 - `pea` declines objects whose fields differ by path where needed (no
   field params at merges yet), objects that escape before every field is
   added, and objects that meet another value at a param. It handles
-  `lit.new` only; `new_this` constructs are next.
+  `lit.new` only. `new_this` constructs were next, and are still not
+  handled.
 - `promote` caches nothing that polymorphic stores reach, since those
   cannot become `store_slot`. Most of what it caches is env slots.
 

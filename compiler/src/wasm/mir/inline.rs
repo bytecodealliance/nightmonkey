@@ -1,10 +1,9 @@
 //! Inlining by splicing (docs/MIR.md §5.5): a callee's MIR, built on its
 //! own, copied into the caller at a call site.
 //!
-//! The callee keeps a real baseline-format frame (an inline frame), kept
-//! current by write-through, so each of its exits becomes an
-//! `exit.inline`: finish the callee in its baseline body, then continue
-//! the caller. Its throws, which nothing in it catches, go straight to the
+//! The callee gets a baseline-format frame region (an inline frame),
+//! which its exits write whole: each becomes an `exit.inline`, which
+//! finishes the callee in its baseline body, then continues the caller. Its throws, which nothing in it catches, go straight to the
 //! call's exception edge. Its `return`s become edges to the call's
 //! continuation, and its onramp roots are dropped (the copy is entered
 //! only at the call).

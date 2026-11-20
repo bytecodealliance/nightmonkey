@@ -749,9 +749,10 @@ pub enum Opcode {
     JsThrow,
     /// Write `args[0]` (a `Val`, or an i32, f64 or bool, stored as the
     /// Value it is) to baseline frame slot `k` (0 `this`, then the
-    /// formals, the locals, the rval): the write-through that keeps the
-    /// frame's copy of every formal, local and rval equal to the slot's
-    /// value, so exits need not carry them (§5.1).
+    /// formals, the locals, the rval). Either a write-through, for the
+    /// formals a mapped `arguments` aliases, or a retaining store before a
+    /// may-GC op, which the lowering emits only where that op can GC, for
+    /// a value the frame slot does not hold yet (§4.4, §5.1).
     FrameStore(u32),
     /// A closure of the script's inner function `index` (a gcthing index)
     /// over environment `args[0]` (`Lambda`).

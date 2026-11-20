@@ -682,28 +682,22 @@ exit pc, this, [args…], [locals…], rval, [stack…]   -- any boxable reprs
 
 - **The arity is fixed by the script:** all formals, all locals, the
   rval, and the operand-stack depth at `pc`.
-- **The frame is written through (amended 2026-09-27).** Every write
-  of a formal, a local or the rval also stores it to its baseline frame
-  slot, as the Value it is: `frame.store k, v`. An i32 or bool is
-  tagged, and an f64 goes in as a double with NaN canonicalized (a
-  valid Value, if not the int32 `NumberValue` would pick). A merge that
-  changes a slot's representation keeps its JS value, so the frame
-  copy stays equal to the slot everywhere, and nothing is stored on
-  edges. The frame is thus the boxed truth for those slots, as in bbv.
-  An exit leaves them as the frame has them: they go as
-  `const.val dead`, like slots that are dead at the exit's pc. What an
-  exit carries is `this` (sloppy code boxes it in place, so it is not
-  written through) and the operand stack.
-  - **Why:** before this, every exit boxed every live slot. That was
-    O(exits × live slots) per function, and quadratic in function size.
-    Mandreel's 16–32 KiB functions lowered to about 660K waffle values
-    each, and the batch outgrew the in-process compiler. After it,
-    mandreel's MIR bodies total 6.3M values rather than 17.7M, and grow
-    linearly (about 5 values per bytecode byte). No Octane score moved,
-    because the stores are one per assignment.
-  - Sinking stores of loop-carried locals out of their loops (so exits
-    in the loop carry them) is the obvious refinement, if the stores
-    ever show up in a profile.
+- **The frame is not written through.** Formals, locals and the rval
+  stay in their own representations while MIR runs, and an exit writes
+  every slot live at its pc (dead ones go as `const.val dead`, left as
+  the frame has them). Exceptions: the formals a mapped `arguments`
+  aliases are written through (`frame.store`, `write_through`), and so
+  is the env slot (below). The only other `frame.store`s are retaining
+  stores, which the builder puts before each may-GC op and the lowering
+  emits only where that op can GC, and only for a managed value the
+  frame slot does not already hold (§4.4, `retain_locals`).
+  - **History.** Write-through of every formal, local and the rval was
+    added on 2026-09-27 (0147796) to bound exit size: each exit had
+    boxed every live slot, O(exits × live slots) per function, and
+    mandreel's 16–32 KiB functions had outgrown the in-process
+    compiler. It was removed the same day (a2a6b69) when rooting moved
+    to home slots at may-GC ops (§4.4), and exit hubs per frame shape
+    (below) keep each exit's code to a branch with its operands.
 - **Operands keep their representation.** The lowering boxes them, not
   the builder. **One exit hub per frame shape:** the shape is each
   operand's representation kind, with dead ones omitted. The hub's
@@ -855,10 +849,14 @@ baseline, and baseline has one body per script. The design:
   fuses). `K`'s entry root params become the call's callee, `this` and
   arguments; `K`'s onramp roots are dropped. A `return` becomes an edge
   to the call's continuation.
-- **The callee's frame is real.** `K` gets a baseline-format frame at a
-  fixed offset above the caller's (the *inline frame*). Write-through
-  (§5.1) keeps its formals, locals and rval current, so `K`'s frame is
-  exactly what baseline expects at every exit.
+- **The callee's frame is a fixed region, written when needed.** `K`
+  gets space for a baseline-format frame at a fixed offset above the
+  caller's (the *inline frame*). Like a function's own frame (§5.1), it
+  is not written through: its exit hub writes the whole frame (`this`,
+  formals, locals, rval, stack, the fixed slots) before it enters `K`'s
+  baseline body, so the frame is what baseline expects at every exit.
+  While MIR runs, the frame holds only what the GC needs (see *Stack
+  layout* below).
 - **An exit inside `K` finishes `K` in baseline** (`exit.inline`). It
   writes `K`'s stack and resume word into the inline frame, then calls
   `K`'s own entry with `ARGC_RESUME_BIT`. A MIR main body forwards such
@@ -885,6 +883,25 @@ baseline, and baseline has one body per script. The design:
   its environment, and all six only for a construct or a callee reading
   its arguments object or new.target. The `exit.inline` hub writes the
   rest before entering the baseline body. (Amended 2026-09-29.)
+- **Lazy inline frames (2026-11-19).** For a frame that nothing reads
+  from memory while MIR runs (`Fixed::None`, and no `rest`, actuals or
+  `apply` forwarding read), `inline.enter` writes only the callee slot
+  (which `frame_env`, `script_ptr` and the hub load). `this`, the formals
+  and the locals are written only when needed: the first GC point on a
+  path in the frame, or in a frame inlined into it, sets each one with no
+  retained value to undefined (`materialize`; a live value is rooted in
+  its home slot anyway). A loop that may GC has them set on its entry
+  edges, not on every iteration. The lowering tracks which frames are
+  still unset along each path (`unmat`, a union at merges). The
+  `exit.inline` hub writes the whole frame, so an exit does not set its
+  own frame's slots first, only its ancestors'. A dead `this` is then
+  retained only by the caller's own rooting. A fast path with no GC point
+  stores one slot per inlined call instead of 2 + formals + locals. A/B,
+  4 placements: richards +9.7%, deltablue +4.1%, box2d +2.4%, the rest
+  within ±1%. Static code grows (richards +0.9% values), because each
+  slow-path GC point carries its own fill stores.
+  `tests/jit-test/night/mir-inline-lazy-frame.js` crashes a build
+  that skips the fill. (`LAZY_INLINE_FRAMES` in `lower.rs`.)
 
 ## 6. Effects and memory
 
@@ -1399,16 +1416,16 @@ inline-eligible (§5.5) is not declined; it is only never spliced.
 - `exit`/`exit.throw` carry the rval. `Val(⊤)` includes magic values.
 - MIR does not maintain a baseline frame while it runs. It uses the
   NightStack only for GC rooting, and writes the whole frame at an exit.
-  (Superseded 2026-09-27: formals, locals and rval are written through,
-  §5.1. The env slot followed in M5i.)
+  (Amended: the env slot is written through since M5i, §5.1. Formals,
+  locals and rval were written through for part of 2026-09-27 only.)
 - `docs/MIR-GEN-SEAM.md` is retired.
 
 **Rev 7 (as built, 2026-11)**
 - BBV, its OPT/GEN tracks and `--pipeline legacy` are removed. MIR over
   baseline is the default pipeline.
-- The frame is written through (§5.1): formals, locals, the rval and,
-  since M5i, the env slot. An exit stores only `this` and the operand
-  stack.
+- The frame is not written through (§5.1), except a mapped
+  `arguments`'s formals and, since M5i, the env slot. Exits write the
+  slots live at their pc.
 - Clean versus dirty is the stamp epoch, not a flags word (§4.2, §6).
   Bodies return `FLAGS_ALL`.
 - A dirty edge exits at the next pc where it can, instead of
@@ -1543,7 +1560,7 @@ declines for everything else).
   - **Size.** Scripts over 32 KiB of bytecode stay in baseline. A MIR
     script carries two bodies, and the gate keeps the batch's memory in
     bounds. (It was briefly 8 KiB, while exits were quadratic; see
-    §5.1's write-through. With 128 KiB, mandreel's four 32-128 KiB
+    §5.1's history. With 128 KiB, mandreel's four 32-128 KiB
     functions still overrun the in-process compiler.)
   - **Gate met** (2026-09-26):
     - `--pipeline mir --strict-coverage` passes the full jit-test lane;

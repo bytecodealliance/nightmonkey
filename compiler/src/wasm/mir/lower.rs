@@ -24,14 +24,14 @@
 //!   the value there (`enter_block`, `conform`). Unmanaged values are
 //!   never rooted.
 //! - **Frame.** Formals, locals and rval stay in their own
-//!   representations in SSA, and each write of one is also stored, boxed,
-//!   to its baseline frame slot (`frame.store`, the builder's
-//!   write-through, §5.1). The env slot is written through too
-//!   (`env.set`/`env.pop`). The frame is thus the boxed truth for those
-//!   slots at every exit.
+//!   representations in SSA and are not written through (§5.1): exits
+//!   write the live ones. A `frame.store` is a mapped `arguments`'s
+//!   formal (written through) or a retaining store, written only where
+//!   the next op can GC (`flush_retain`). The env slot is written through
+//!   (`env.set`/`env.pop`).
 //! - **Exits (§5.1).** An exit goes to the hub for its frame shape, which
-//!   boxes and stores what the frame does not already hold (`this`, the
-//!   operand stack, the fixed slots), stores the resume word and the
+//!   boxes and stores what the frame does not already hold (the slots
+//!   live at its pc, the operand stack, the fixed slots), stores the resume word and the
 //!   onramp backoff, and then either calls the baseline body with
 //!   `ARGC_RESUME_BIT` and returns what it returns (a fresh entry), or
 //!   returns `ERR_DEOPT` to the baseline caller that onramped in.
@@ -117,6 +117,12 @@ const PROVEN_CALLS: bool = true;
 const PUSH_ARM_MAX_EXTRA: usize = 7;
 
 const UNDEF: u64 = TAG_UNDEFINED << 32;
+
+/// Whether an inline frame no op reads from memory is written lazily: its
+/// `inline.enter` stores the callee only, its first GC point on a path
+/// makes `this`, the formals and the locals valid (`materialize`), and its
+/// exit hub writes them whole (§5.5).
+const LAZY_INLINE_FRAMES: bool = true;
 
 /// The tags of values that are no GC thing (no barrier owes them anything).
 const GC_FREE_TAGS: TagSet = TagSet::prims(crate::opsem::Prims::from_bits(
@@ -462,6 +468,8 @@ struct Lower<'a> {
     pending: BTreeMap<mir::Block, Vec<PendingEdge>>,
     plans: BTreeMap<mir::Block, Vec<(mir::Value, Loc, bool)>>,
     entry_dirty: BTreeMap<mir::Block, BTreeSet<u32>>,
+    /// Each entered block's `unmat` on entry.
+    entry_unmat: BTreeMap<mir::Block, BTreeSet<u32>>,
     rpo_index: BTreeMap<mir::Block, usize>,
     preds: BTreeMap<mir::Block, Vec<mir::Block>>,
     /// Per block: the managed values that may have been live across a
@@ -488,6 +496,18 @@ struct Lower<'a> {
     /// `inline.enter` writes (and its GC scan covers); the exit hub writes
     /// the rest (§5.5).
     fixed: Vec<Fixed>,
+    /// Per frame: whether its `inline.enter` writes only the callee
+    /// (`lazy_frame`), leaving `this`, the formals and the locals to the
+    /// frame's GC points (`materialize`) and its exit hub.
+    lazy: Vec<bool>,
+    /// The lazy inline frames whose `this`, formals and locals may hold
+    /// invalid bits along the emission path: entered, and no GC point of
+    /// theirs (or of a frame inlined into them) reached since. A merge
+    /// takes the union.
+    unmat: BTreeSet<u32>,
+    /// While an `exit.inline` roots: its own frame, which its hub writes
+    /// whole, so `root` leaves it as it is.
+    mat_skip: Option<u32>,
     frame_layouts: Vec<FrameLayout>,
     /// The frame of the instruction being lowered.
     cur_frame: u32,
@@ -587,6 +607,7 @@ struct PendingEdge {
     snap: BTreeMap<mir::Value, (Option<Value>, bool)>,
     dirty: BTreeSet<u32>,
     framed: BTreeMap<(u32, u32), mir::Value>,
+    unmat: BTreeSet<u32>,
     cold: bool,
 }
 
@@ -735,6 +756,7 @@ pub fn lower<'a>(
         pending: BTreeMap::new(),
         plans: BTreeMap::new(),
         entry_dirty: BTreeMap::new(),
+        entry_unmat: BTreeMap::new(),
         rpo_index: BTreeMap::new(),
         preds: BTreeMap::new(),
         crossed_out: BTreeMap::new(),
@@ -744,6 +766,9 @@ pub fn lower<'a>(
         frame_end: vec![root_base],
         frame_top: vec![root_base],
         fixed: vec![Fixed::All],
+        lazy: vec![false],
+        unmat: BTreeSet::new(),
+        mat_skip: None,
         frame_layouts: vec![layout],
         cur_frame: 0,
         baseline_calls: vec![],
@@ -1918,6 +1943,17 @@ impl<'a> Lower<'a> {
             framed.retain(|k, v| !entered.contains(&k.0) && stores.get(k).is_none_or(|s| s.iter().all(|w| w == v)));
         }
         self.entry_dirty.insert(b, dirty.clone());
+        // The lazy frames not yet valid on some edge (a merge takes the
+        // union). A loop that may GC starts with its frames valid, as with
+        // `dirty`: its entry edges materialize them (`conform`), not every
+        // iteration's GC point.
+        let mut unmat: BTreeSet<u32> = pend.iter().flat_map(|p| p.unmat.iter().copied()).collect();
+        if !later.is_empty() && !unmat.is_empty() && self.loop_may_gc(b, &later) {
+            for fid in self.active_frames(b) {
+                unmat.remove(&fid);
+            }
+        }
+        self.entry_unmat.insert(b, unmat.clone());
         for p in pend {
             self.conform(b, p)?;
         }
@@ -1934,6 +1970,7 @@ impl<'a> Lower<'a> {
         self.slotted.clear();
         self.dirty = dirty;
         self.framed = framed;
+        self.unmat = unmat;
         self.pending_retain = self.carried_retain.remove(&b).unwrap_or_default();
         for (v, loc, es) in plan {
             match loc {
@@ -2018,6 +2055,18 @@ impl<'a> Lower<'a> {
                 stores += 1;
             }
         }
+        // A lazy frame active in `b` that `b` expects valid but this edge
+        // has not made so (a GC-ing loop's entry edge): made valid here,
+        // with the edge's frame contents.
+        let expect = &self.entry_unmat[&b];
+        let owed: Vec<u32> = self
+            .active_frames(b)
+            .into_iter()
+            .filter(|fid| p.unmat.contains(fid) && !expect.contains(fid))
+            .collect();
+        for fid in owed {
+            stores += self.fill_frame(fid, &p.framed);
+        }
         if self.root_census.is_some() {
             let cold = std::mem::replace(&mut self.cold, p.cold);
             self.root_tick(&format!("edge->{b}[{}]", stored.join(",")), stores);
@@ -2050,6 +2099,7 @@ impl<'a> Lower<'a> {
             snap,
             dirty: self.dirty.clone(),
             framed: self.framed.clone(),
+            unmat: self.unmat.clone(),
             cold: self.cold,
         };
         if self.plans.contains_key(&b) {
@@ -2653,6 +2703,8 @@ impl<'a> Lower<'a> {
             let fid = u32::try_from(self.frame_off.len()).unwrap();
             let nact = fr.argc.map_or(lay.nargs, |n| n.max(lay.nargs)) as usize;
             let mut fixed = Fixed::None;
+            // Whether an op reads the frame's actuals from memory.
+            let mut reads = false;
             for (i, d) in self.f.insts.iter() {
                 if self.f.inst_frame[i] != fid {
                     continue;
@@ -2661,9 +2713,14 @@ impl<'a> Lower<'a> {
                     Opcode::ArgsObject | Opcode::FrameNewTarget => fixed = Fixed::All,
                     Opcode::InlineEnter if d.args.len() != 2 + nact => fixed = Fixed::All,
                     Opcode::EnvSet | Opcode::EnvPop if fixed == Fixed::None => fixed = Fixed::Env,
+                    Opcode::RestArray(_) | Opcode::ActualArgOr(_) | Opcode::ActualArg | Opcode::ApplyFwd => reads = true,
                     _ => {}
                 }
             }
+            // Lazy: nothing reads `this`, the actuals or the locals from the
+            // frame while MIR runs (the callee, which `frame_env`,
+            // `script_ptr` and the exit hub load, is still written).
+            self.lazy.push(LAZY_INLINE_FRAMES && fixed == Fixed::None && !reads && nact == lay.nargs as usize);
             self.frame_off.push(off);
             self.frame_voff.push(voff);
             self.frame_end.push(voff + lay.top(fr.max_depth + 3));
@@ -2765,12 +2822,73 @@ impl<'a> Lower<'a> {
         Ok(stores)
     }
 
+    /// Make valid the lazy inline frames among `fid` and its ancestors
+    /// still unmaterialized on the emission path (`unmat`), which the next
+    /// GC scan covers: each of `this`, the formals and the locals that
+    /// holds no retained value (`framed`) becomes undefined. A live value
+    /// is rooted in its home slot anyway; a dead one the frame no longer
+    /// needs, and the exit hub writes the whole frame. Not `mat_skip`, an
+    /// exit's own frame. Returns the stores made.
+    fn materialize(&mut self, mut fid: u32) -> u32 {
+        let mut stores = 0;
+        while fid != 0 {
+            if self.mat_skip != Some(fid) && self.unmat.remove(&fid) {
+                let framed = std::mem::take(&mut self.framed);
+                stores += self.fill_frame(fid, &framed);
+                self.framed = framed;
+            }
+            fid = self.f.inline_frames[fid as usize - 1].parent;
+        }
+        stores
+    }
+
+    /// Lazy inline frame `fid`'s `this`, formals and locals made valid
+    /// Values: undefined where `framed` (the frame's contents along the
+    /// path) has no retained value. Returns the stores made.
+    fn fill_frame(&mut self, fid: u32, framed: &BTreeMap<(u32, u32), mir::Value>) -> u32 {
+        let f = fid as usize;
+        let l = self.frame_layouts[f];
+        let undef = self.i64c(UNDEF);
+        let mut stores = 0;
+        for k in 0..=l.nargs + l.nlocals {
+            if framed.contains_key(&(fid, k)) {
+                continue;
+            }
+            let off = match k {
+                0 => self.frame_off[f] + FrameLayout::THIS,
+                k if k <= l.nargs => self.frame_off[f] + l.arg(k - 1),
+                k => self.frame_voff[f] + l.local(k - 1 - l.nargs),
+            };
+            self.store_i64(self.vp, off, undef);
+            stores += 1;
+        }
+        stores
+    }
+
+    /// The inline frames active on entry to `b` (its first instruction's
+    /// frame, unless that enters it, and their ancestors), innermost first.
+    fn active_frames(&self, b: mir::Block) -> Vec<u32> {
+        let Some(&i) = self.f.blocks[b].insts.first() else { return vec![] };
+        let mut fid = self.f.inst_frame[i];
+        if fid != 0 && self.f.insts[i].op == Opcode::InlineEnter {
+            fid = self.f.inline_frames[fid as usize - 1].parent;
+        }
+        let mut out = vec![];
+        while fid != 0 {
+            out.push(fid);
+            fid = self.f.inline_frames[fid as usize - 1].parent;
+        }
+        out
+    }
+
     /// Before a may-GC call: store each of `live` (managed values live
     /// across it) that its home slot does not hold yet. A stored value
     /// stays stored (SSA values do not change, and the GC updates the slot
     /// in place), so repeated calls store it once.
     fn root(&mut self, live: &[mir::Value]) -> R<()> {
         let mut stores = self.flush_retain(Some(live))?;
+        let fr = self.cur_frame;
+        stores += self.materialize(fr);
         for &v in live {
             if self.slotted.contains(&v) {
                 continue;
@@ -4465,14 +4583,15 @@ impl<'a> Lower<'a> {
                     self.cur = arr;
                     // The helper's reload rebinds the live values on its
                     // path only.
-                    let saved = (self.vmap.clone(), self.slotted.clone(), self.dirty.clone(), self.framed.clone());
+                    let saved =
+                        (self.vmap.clone(), self.slotted.clone(), self.dirty.clone(), self.framed.clone(), self.unmat.clone());
                     let cell = self.alloc_inline(inst, Some(0))?;
                     let lv = self.i32c(0);
                     let live = self.live_across(inst);
                     let (ok, r) = self.gc_call(self.h.new_array, &[lv, cell], &live)?;
                     let same = self.epoch_same.take().expect("gc_call sampled the epoch");
                     self.clean_or_dirty(inst, ok, same, &[r])?;
-                    (self.vmap, self.slotted, self.dirty, self.framed) = saved;
+                    (self.vmap, self.slotted, self.dirty, self.framed, self.unmat) = saved;
                     self.cur = other;
                 }
                 // The frame `[callee, this, args…, new.target]` above the
@@ -5048,13 +5167,14 @@ impl<'a> Lower<'a> {
         self.rope_concat(inst, x, y, helper)?;
         self.cur = helper;
         // The helper's reload rebinds the live values on its path only.
-        let saved = (self.vmap.clone(), self.slotted.clone(), self.dirty.clone(), self.framed.clone(), self.cold);
+        let saved =
+            (self.vmap.clone(), self.slotted.clone(), self.dirty.clone(), self.framed.clone(), self.unmat.clone(), self.cold);
         let live = self.live_across(inst);
         let (ok, r) = self.gc_call(self.h.concat, &[x, y], &live)?;
         let t = self.edge(inst, 0, &[r])?;
         let e = self.edge(inst, 2, &[])?;
         self.cond_br(ok, t, e);
-        (self.vmap, self.slotted, self.dirty, self.framed, self.cold) = saved;
+        (self.vmap, self.slotted, self.dirty, self.framed, self.unmat, self.cold) = saved;
         self.epoch_same = None;
         self.cur = other;
         Ok(())
@@ -9711,13 +9831,21 @@ impl<'a> Lower<'a> {
             return Err("lowering: inline.enter needs callee, this and every formal".into());
         }
         let mut boxed = vec![];
-        for (&v, &mv) in a.iter().zip(&d.args) {
+        let n = if self.lazy[fid] { 1 } else { a.len() };
+        for (&v, &mv) in a.iter().zip(&d.args).take(n) {
             let t = self.ty(mv);
             boxed.push(self.boxed(&t, v)?);
         }
         // Inline frames are placed from `vp`.
         let sp = self.vp;
         self.store_i64(sp, base + FrameLayout::CALLEE, boxed[0]);
+        if self.lazy[fid] {
+            // The rest at the frame's GC points and exits. (`this` and the
+            // actuals stay rooted by the caller's own liveness, or retained
+            // by the callee's `frame.store`s, as eager frames had them.)
+            self.unmat.insert(fid as u32);
+            return Ok(());
+        }
         self.store_i64(sp, base + FrameLayout::THIS, boxed[1]);
         for i in 0..nact {
             self.store_i64(sp, base + l.arg(i), boxed[2 + i as usize]);
@@ -9796,7 +9924,10 @@ impl<'a> Lower<'a> {
         // live across the call (the same set at every exit of this frame,
         // which all continue at the call's join).
         let live = self.live_across(inst);
+        // (Its own frame its hub writes whole.)
+        self.mat_skip = Some(fid);
         self.root(&live)?;
+        self.mat_skip = None;
         // The whole frame, boxed: a dead slot and the stack above this
         // pc's depth as undefined (baseline writes those before reading).
         let undef = self.i64c(UNDEF);

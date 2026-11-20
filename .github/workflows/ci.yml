@@ -15,7 +15,7 @@ defaults:
 # carries the external compiler hook API.
 env:
   FIREFOX_REPO: bytecodealliance/firefox
-  FIREFOX_REF: cfallin/external-slots
+  FIREFOX_REF: wasi-ff147
   SM_OBJDIR: obj-nightmonkey-sm
 
 jobs:

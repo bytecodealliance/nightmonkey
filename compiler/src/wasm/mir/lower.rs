@@ -2713,7 +2713,51 @@ impl<'a> Lower<'a> {
                     Opcode::InlineEnter if d.args.len() != 2 + nact => fixed = Fixed::All,
                     Opcode::EnvSet | Opcode::EnvPop if fixed == Fixed::None => fixed = Fixed::Env,
                     Opcode::RestArray(_) | Opcode::ActualArgOr(_) | Opcode::ActualArg | Opcode::ApplyFwd => reads = true,
-                    _ => {}
+                    // The rest use only the part of the frame every inlinee has.
+                    Opcode::ConstVal(..) | Opcode::ConstI32(..) | Opcode::ConstF64(..)
+                    | Opcode::ConstBool(..) | Opcode::ConstObj(..) | Opcode::ConstStr(..)
+                    | Opcode::Box | Opcode::BoxDouble | Opcode::Unbox(..) | Opcode::I32ToInt
+                    | Opcode::I32ToF64 | Opcode::IntToF64 | Opcode::Weaken
+                    | Opcode::GuardUnbox(..) | Opcode::GuardTags(..) | Opcode::GuardKind(..)
+                    | Opcode::GuardLayout { .. } | Opcode::GuardCtor { .. }
+                    | Opcode::GuardSingleton(..) | Opcode::GuardScript(..)
+                    | Opcode::MethodLoad { .. } | Opcode::F64ToIntExact | Opcode::IntToI32
+                    | Opcode::GuardRange(..) | Opcode::CheckFuse(..) | Opcode::CheckBinding(..)
+                    | Opcode::CheckNative(..) | Opcode::AccessorProbe(..) | Opcode::Jump
+                    | Opcode::Br | Opcode::Switch(..) | Opcode::SwitchStr(..) | Opcode::Return
+                    | Opcode::Exit { .. } | Opcode::ExitThrow { .. } | Opcode::GenSuspend { .. }
+                    | Opcode::IsGenClosing | Opcode::ExitInline { .. } | Opcode::InlineEnter
+                    | Opcode::Unreachable | Opcode::I32Ovf(..) | Opcode::I32Wrap(..)
+                    | Opcode::IntArith(..) | Opcode::F64Arith(..) | Opcode::F64Neg
+                    | Opcode::I32Bit(..) | Opcode::I32Ushr | Opcode::ToInt32 | Opcode::Cmp(..)
+                    | Opcode::Math(..) | Opcode::JsAdd | Opcode::JsBinop(..)
+                    | Opcode::JsUnop(..) | Opcode::JsCompare(..) | Opcode::JsTypeof
+                    | Opcode::JsTypeofEq(..) | Opcode::JsConstantStrictEq(..)
+                    | Opcode::ArgsMapped(..) | Opcode::ArgsMappedSet(..) | Opcode::JsToBool
+                    | Opcode::JsToNumeric | Opcode::Prim(..) | Opcode::JsGetProp(..)
+                    | Opcode::GetPropData(..) | Opcode::SetPropData(..) | Opcode::JsSetProp(..)
+                    | Opcode::JsGetElem | Opcode::GetElemData | Opcode::SetElemData(..)
+                    | Opcode::JsSetElem(..) | Opcode::JsGetName(..) | Opcode::JsBoxThis
+                    | Opcode::JsBindGName(..) | Opcode::JsSetName(..) | Opcode::JsRt(..)
+                    | Opcode::ArgsLength | Opcode::FrameCallee | Opcode::IterMore
+                    | Opcode::IterIsDone | Opcode::IterEnd | Opcode::IterOptimizable
+                    | Opcode::JsIsBuiltin(..) | Opcode::JsThrow | Opcode::FrameStore(..)
+                    | Opcode::JsLambda(..) | Opcode::LoadField(..) | Opcode::LoadSlot(..)
+                    | Opcode::StoreSlot(..) | Opcode::StoreField(..) | Opcode::InitField(..)
+                    | Opcode::PublishLayout | Opcode::NewObject(..) | Opcode::LitNew(..)
+                    | Opcode::LitInit(..) | Opcode::NewArray | Opcode::LoadElem
+                    | Opcode::StoreElem(..) | Opcode::LoadTa | Opcode::StoreTa
+                    | Opcode::LengthArray | Opcode::LengthString | Opcode::LengthTa
+                    | Opcode::ElementsPtr | Opcode::StrCharCodeAt | Opcode::LoadGName(..)
+                    | Opcode::StoreGName(..) | Opcode::GlobalObject | Opcode::EnvCurrent
+                    | Opcode::EnvCallee(..) | Opcode::ObjectLit(..) | Opcode::EnvSet
+                    | Opcode::EnvPop | Opcode::EnvParent | Opcode::EnvLoad(..)
+                    | Opcode::EnvStore(..) | Opcode::Call | Opcode::CallIter
+                    | Opcode::CallEval(..) | Opcode::CallDirect | Opcode::Construct(..)
+                    | Opcode::CreateThis(..) | Opcode::NewThis(..) | Opcode::NewThisInit { .. }
+                    | Opcode::FnIsCtor | Opcode::ObjEmulatesUndef | Opcode::Restamp(..)
+                    | Opcode::StampFresh(..) | Opcode::CtorStamp(..) | Opcode::CtorPublish(..)
+                    | Opcode::CallNative(..) => {}
                 }
             }
             // Lazy: nothing reads `this`, the actuals or the locals from the

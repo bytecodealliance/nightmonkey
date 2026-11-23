@@ -394,6 +394,8 @@ JS_PUBLIC_API bool JS::NightActivate(JSContext* cx) {
     atexit(NightStatsDump);
   }
   if (gNightActivated) {
+    MOZ_RELEASE_ASSERT(night_runtime_env_context() == cx,
+                       "NightMonkey is active in another context");
     return true;
   }
   if (!gNightRegistration.compiled) {

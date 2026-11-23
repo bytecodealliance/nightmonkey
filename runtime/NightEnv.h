@@ -119,6 +119,10 @@ JSFunction* ResolveGlobalPath(JSContext* cx, const char* path, size_t len);
 extern "C" bool night_runtime_install_env(JSContext* cx,
                                           const js::night::NightEnvDesc& env);
 
+// The context the environment is installed for (null before). There is at most
+// one environment per process: installing another crashes.
+extern "C" JSContext* night_runtime_env_context();
+
 // Blow every gname/binding value fuse and forbid re-arming. Required whenever
 // interpreted code can write globals without going through the compiled
 // hooks (any interpreter coverage: skipped scripts, eval, shell evaluate).

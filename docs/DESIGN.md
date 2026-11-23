@@ -19,10 +19,10 @@ environment per process.
 All compiled scripts belong to one realm, and compiled code caches values of
 its global. Other realms may exist, but only interpreted code may run in them.
 
-These restrictions are embedding assumptions, not enforced API properties, and
-are part of the trusted deployment boundary: an embedding must not install two
-environments, activate NightMonkey in two runtimes, or register scripts of two
-realms.
+Installing a second environment, or activating NightMonkey in a second context,
+is a release assertion failure. The single realm is an embedding assumption, not
+an enforced API property, and is part of the trusted deployment boundary: an
+embedding must not register scripts of two realms.
 
 Nothing is assumed about values or code from outside the captured program.
 Source compiled at run time is interpreted, and values it or the embedder

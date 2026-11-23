@@ -158,8 +158,9 @@ that forward it (`snapshot`, `nightmonkey`, `wasm-jit-runner`), add its arm to
 `compiler/src/opcodes/mod.rs`, and condition the lowering changes on
 `feature = "ff153"`.
 
-CI (`.github/workflows/ci.yml`) builds both trees and runs the jit-test
-suite in the AOT lane.
+CI (`.github/workflows/ci.yml`) builds both trees and runs the Rust unit
+tests, NightMonkey's regression tests, and the jit-test suite in the MIR
+and baseline lanes. It does not run the jstests, which take hours.
 
 ## Prerequisites
 
@@ -301,36 +302,3 @@ For performance work, the benchmark-lane configs
   the `--enable-external-compiler-hooks` surface NightMonkey plugs into,
   organized by mechanism, and how to port it to another SpiderMonkey.
 - **[`docs/TODO`](docs/TODO)**.
-
-## Performance
-
-As of 2026-09-04, comparing to native IonMonkey and baseline tiers, and
-against Wasm-hosted interpreter and weval+PBL execution:
-
-```plain
-bench            native-ion nat-baseline  wasm-interp        weval          aot   aot/wasm-int      aot/weval weval/wasm-int      ion/weval        ion/aot   baseline/aot
-richards              29205         6489          377          936        11893          31.55          12.71           2.48          31.20           2.46           0.55
-deltablue             28179         6870          395          978         6678          16.91           6.83           2.48          28.81           4.22           1.03
-crypto                42755         5654          714          949        15696          21.98          16.54           1.33          45.05           2.72           0.36
-raytrace              58549        11458         1045         1815        11964          11.45           6.59           1.74          32.26           4.89           0.96
-earley-boyer          83262        21153         1510         3982        15088           9.99           3.79           2.64          20.91           5.52           1.40
-navier-stokes         43926         8269         1223         2090        24980          20.43          11.95           1.71          21.02           1.76           0.33
-splay                 29291        23303         5248         6853        10693           2.04           1.56           1.31           4.27           2.74           2.18
-regexp                18601         7223          596          766         2484           4.17           3.24           1.29          24.28           7.49           2.91
-pdfjs                 95804        40738         4116         6185        24743           6.01           4.00           1.50          15.49           3.87           1.65
-mandreel              73940        11619          865         1269        19545          22.60          15.40           1.47          58.27           3.78           0.59
-code-load             70224        69259        37108        37005        37271           1.00           1.01           1.00           1.90           1.88           1.86
-box2d                 99321        22370         1896         4135        25999          13.71           6.29           2.18          24.02           3.82           0.86
-react-bench           0.631        1.415       15.026       10.421        2.862           5.25           3.64           1.44          16.52           4.54           2.02
-geomean               49233        14111         1527         2569        14247           8.93           5.37           1.66          18.94           3.53           1.05
-(octane = Score higher-better; react-bench = ms/render lower-better; best-of-3, taskset -c 1)
-(ratio cols = speedup of A over B, direction-corrected for react-bench;
- geomean row: lane cols over octane scores only, ratio cols over all benches)
-```
-
-We can conclude that NightMonkey is ~9x faster than the Wasm interpreter on
-average, or ~5x faster than weval+PBL. It is nearly on par with the native
-baseline compiler, and within ~3.5x of the IonMonkey optimized native-code
-ceiling (while running within a Wasm engine). On benchmarks where type-based
-specialization works especially well, NightMonkey comes within ~2.5x (e.g.
-Richards) of native Ion.

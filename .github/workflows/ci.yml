@@ -91,5 +91,24 @@ jobs:
           cmake -S . -B build -DSPIDERMONKEY_DIST="$GITHUB_WORKSPACE/firefox/$SM_OBJDIR/dist"
           cmake --build build
 
-      - name: jit-tests (AOT lane)
+      - name: cargo test
+        run: CARGO_TARGET_DIR=build/cargo cargo test --release --locked --workspace
+
+      - name: NightMonkey tests (MIR)
+        run: scripts/run-night-tests.sh build
+
+      - name: NightMonkey tests (baseline)
+        run: NIGHT_OPTIONS="--pipeline baseline" scripts/run-night-tests.sh build
+
+      - name: NightMonkey tests (interpreter)
+        run: NIGHT_INPROCESS_OFF=1 scripts/run-night-tests.sh build
+
+      - name: jit-tests (MIR)
         run: scripts/run-jit-tests.sh firefox build -- --format=automation
+
+      # Baseline compiles all but ForceInterpreter scripts: strict coverage
+      # fails a test that leaves any other interpreted.
+      - name: jit-tests (baseline)
+        run: >-
+          NIGHT_OPTIONS="--pipeline baseline --strict-coverage"
+          scripts/run-jit-tests.sh firefox build -- --format=automation

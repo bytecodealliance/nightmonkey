@@ -985,7 +985,21 @@ impl Opcode {
             SetPropData(_) | SetElemData(_) => {
                 vec![SuccRole::OkClean, SuccRole::OkDirty, SuccRole::Fail, SuccRole::Err]
             }
-            _ => vec![],
+            // The exiting terminators, and every op that does not end a block.
+            ConstVal(..) | ConstI32(..) | ConstF64(..) | ConstBool(..) | ConstObj(..)
+            | ConstStr(..) | Box | BoxDouble | Unbox(..) | I32ToInt | I32ToF64 | IntToF64
+            | Weaken | Return | Exit { .. } | ExitThrow { .. } | GenSuspend { .. }
+            | IsGenClosing | InlineEnter | Unreachable | I32Wrap(..) | IntArith(..)
+            | F64Arith(..) | F64Neg | I32Bit(..) | I32Ushr | ToInt32 | Cmp(..) | Math(..)
+            | JsTypeof | JsTypeofEq(..) | JsConstantStrictEq(..) | ArgsMapped(..)
+            | ArgsMappedSet(..) | JsToBool | ArgsLength | FrameNewTarget | FrameCallee
+            | IterMore | IterIsDone | IterEnd | IterOptimizable | ActualArg | ActualArgOr(..)
+            | JsIsBuiltin(..) | FrameStore(..) | LoadSlot(..) | StoreSlot(..) | PublishLayout
+            | NewObject(..) | NewArray | LengthArray | LengthString | LengthTa | ElementsPtr
+            | LoadGName(..) | StoreGName(..) | GlobalObject | EnvCurrent | EnvCallee(..)
+            | ObjectLit(..) | EnvSet | EnvPop | EnvParent | EnvLoad(..) | EnvStore(..)
+            | FnIsCtor | ObjEmulatesUndef | Restamp(..) | StampFresh(..) | CtorStamp(..)
+            | CtorPublish(..) => vec![],
         }
     }
 
@@ -2756,7 +2770,19 @@ pub fn effects(op: &Opcode, args: &[Type], m: &Module) -> Effects {
             fx.writes = vec![Region::Env(*s)];
             fx.flags = FlagsEffect::Bits(FlagBits::MUT_OTHER);
         }
-        _ => {}
+        // No effect on the heap or the claims on it, and no GC, throw or JS.
+        ConstVal(..) | ConstI32(..) | ConstF64(..) | ConstBool(..) | ConstObj(..) | Box
+        | BoxDouble | Unbox(..) | I32ToInt | I32ToF64 | IntToF64 | Weaken | GuardUnbox(..)
+        | GuardTags(..) | GuardKind(..) | GuardLayout { .. } | GuardCtor { .. }
+        | GuardSingleton(..) | GuardScript(..) | F64ToIntExact | IntToI32 | GuardRange(..)
+        | CheckFuse(..) | CheckBinding(..) | CheckNative(..) | AccessorProbe(..) | Jump | Br
+        | Switch(..) | SwitchStr(..) | Return | Exit { .. } | ExitThrow { .. }
+        | GenSuspend { .. } | IsGenClosing | InlineEnter | Unreachable | I32Ovf(..)
+        | I32Wrap(..) | IntArith(..) | F64Arith(..) | F64Neg | I32Bit(..) | I32Ushr | ToInt32
+        | Cmp(..) | Math(..) | JsTypeof | JsTypeofEq(..) | JsConstantStrictEq(..) | JsToBool
+        | ArgsLength | FrameNewTarget | FrameCallee | IterIsDone | ActualArg | ActualArgOr(..)
+        | JsIsBuiltin(..) | FrameStore(..) | LengthString | GlobalObject | ObjectLit(..)
+        | EnvParent | FnIsCtor | ObjEmulatesUndef => {}
     }
     fx
 }

@@ -1474,8 +1474,19 @@ extern "C" void night_runtime_arm_gname_fuses_from_live(JSContext* cx) {
   }
 }
 
+// The context the process's one environment was installed for. Compiled code
+// addresses its regions absolutely, so a second environment, or a second
+// context running on the first one's, would share state keyed by the wrong
+// heap (docs/DESIGN.md section 1).
+static JSContext* gNightEnvContext = nullptr;
+
+JSContext* night_runtime_env_context() { return gNightEnvContext; }
+
 bool night_runtime_install_env(JSContext* cx,
                                const js::night::NightEnvDesc& env) {
+  MOZ_RELEASE_ASSERT(!gNightEnvContext,
+                     "only one NightMonkey environment may be installed");
+  gNightEnvContext = cx;
   // Everything the image published about its reserved regions, taken as
   // one table rather than a global per field. Helpers with no context
   // argument resolve theirs through RtState(cx).cx.

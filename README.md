@@ -50,11 +50,10 @@ points-to (heap abstraction) + callgraph analysis, over a lattice that
 is a hybrid of a Steensgaard (union-find-based) and capped Andersen
 (points-to-set/membership-based) design.
 
-The codegen using the types that come out of this analysis is then a
-"two-track" approach: there is one optimistic track that adheres to
-"type contexts" that are maximally optimal, and one fully generic track.
-(Earlier experiments tried to do more multiversioning, a la Static Basic
-Block Versioning, but that did not converge well.)
+Codegen using the types that come out of this analysis has two tiers: MIR,
+which compiles only the optimistic path, and baseline, a fully generic
+body. A failed guard in MIR code exits to the baseline body at that point,
+and baseline re-enters MIR at loop headers.
 
 ## Layout
 

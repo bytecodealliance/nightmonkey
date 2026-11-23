@@ -2777,8 +2777,8 @@ uint32_t night_runtime_get_prop_ic_miss(JSContext* cx, uint32_t top,
   // the engine's generic get: the counters decide whether the caller's
   // raw carriers and stamp-guarded facts survived (`MissQuiet`). Without
   // this, every first miss at a hot site, and every method read on a
-  // string receiver, would step the caller off the Opt track for the rest
-  // of its body.
+  // string receiver, would send the caller down its dirty edge, killing the
+  // facts it holds.
   const MissQuiet quiet(cx);
   JS::RootedObject obj(cx, ReceiverObjectAtom(cx, recv, "ic-get ", atomId));
   if (!obj) {
@@ -4549,7 +4549,7 @@ bool night_runtime_init_elem(JSContext* cx, uint32_t top, uint64_t obj,
 }
 
 // Generic binary arithmetic/bitop. `kind` matches the BINOP_* constants in
-// js/src/night/compiler/src/wasm/translate.rs.
+// compiler/src/wasm/translate.rs.
 bool night_runtime_binop(JSContext* cx, uint32_t top, uint32_t kind, uint64_t a,
                          uint64_t b) {
   SetNightTop(cx, top);
@@ -7356,7 +7356,7 @@ void js::night::NightRearmDynamicCodeFuse() {
   }
 }
 
-// Analysis-chosen slot layouts (docs/MIR-KICKOFF-6.md). A layout row names a
+// Analysis-chosen slot layouts. A layout row names a
 // class's fields in slot order: the union of the constructor's fields over
 // its paths, so an object whose path writes them in another order, or skips
 // some, would put later fields in lower slots than the row says and lose

@@ -450,7 +450,7 @@ impl<'a> Gen<'a> {
     /// field and `val` is of that type, or a class typing no such field;
     /// else 0. The engine then keeps its TYPES across a store that runs no
     /// JS, so a baseline episode (after an exit, say) does not demote the
-    /// conforming objects it writes, which would fail OPT's guards for good.
+    /// conforming objects it writes, which would fail MIR's guards for good.
     fn vouch_types(&mut self, atom: u32, recv: Value, val: Value) -> Value {
         let name = self.atoms.name_of(atom);
         let classes = crate::wasm::mir::stamp::field_classes(self.ctx, name);

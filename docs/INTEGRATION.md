@@ -37,11 +37,11 @@ engine sites that call them:
 | `objectDemoted(cx, obj, oldWord, why)` | every structural change to an object whose external word is nonzero: `toDictionaryMode`, `changeProperty`, `changeCustomDataPropAttributes`, `removeProperty`, `freezeOrSealProperties`, `JSObject::setFlag`, `JSObject::swap`; and a slot store that changed the word |
 | `storeClearMask`, `storeNonNumberClearMask` | the slot-store choke `NativeObject::setSlot`/`initSlot`: bits cleared on any engine-path store, and additionally when the value is not a number |
 | `propertyAdded(cx, obj, id, slot, nfixed)` | `NativeObject::addProperty` (both paths), `AddSlotAndCallAddPropHook`, for an object whose word is nonzero |
-| `shapeForAdd(cx, obj, id, flags, &shape)` | the engine's property-add paths (interpreter, IC misses, runtime helpers): lets the tier choose the slot a new data property goes in (`docs/MIR.md` §13, M5k) |
+| `shapeForAdd(cx, obj, id, flags, &shape)` | the engine's property-add paths (interpreter, IC misses, runtime helpers): lets the tier choose the slot a new data property goes in (`docs/MIR.md` §4.3) |
 | `globalKeyChanged(cx, id)` | `NativeDefineProperty`, `NativeDeleteProperty` on a global object |
 | `globalDataStored(cx, id, bits)` | `NativeSetExistingDataProperty` on a global object |
 | `globalLexicalShadowAdded(cx, idBits)` | `InitGlobalOrEvalDeclarations`, a new global lexical binding |
-| `objectFuseInvalidated(cx, fuse, slot)` | wherever `ObjectFuse` invalidates Ion's constant-property dependencies: the holder's property written, deleted or made an accessor, the name shadowed below it, a prototype changed on the chain, a swap (`docs/MIR.md` §13, M5s) |
+| `objectFuseInvalidated(cx, fuse, slot)` | wherever `ObjectFuse` invalidates Ion's constant-property dependencies: the holder's property written, deleted or made an accessor, the name shadowed below it, a prototype changed on the chain, a swap |
 | `enterScript(cx, state)` | `js::RunScript`, for a script whose external tier word is nonzero |
 | `enterCall(cx, args, script, constructing)` | the interpreter's `JSOp::Call` fast path, same gate |
 | `isForeignGenerator(cx, gen)`, `resumeGenerator(cx, ...)` | `JSOp::Resume`: a generator whose frame belongs to the tier |

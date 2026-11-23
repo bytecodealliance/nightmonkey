@@ -1860,7 +1860,7 @@ pub(crate) fn compute_args_reads(
 
 /// The stable per-module translation context threaded into every script's
 /// translation: the resolved helpers, the shared source, the module-wide
-/// switches (inline budget, night_compiler/bigint gates), and the read-only analysis
+/// options, and the read-only analysis
 /// tables (likely-class / call / apply / layout / gname-fuse maps). Built once
 /// per `translate_all` run and passed by reference; the genuinely per-script
 /// inputs (`m`, `atoms`, `source_id`, `script`, `is_global`) stay positional.
@@ -4700,8 +4700,7 @@ mod tests {
     /// Arithmetic on operands the analysis did not prove Int32 lowers to the
     /// generic boxed
     /// tag-guarded inline path (with the folded overflow guard for `Sub`) and
-    /// the module validates. `GetArg 0; GetArg 0; Sub; Return`. (Overflow
-    /// *behavior* is validated by `test-arith-overflow.js` end to end.)
+    /// the module validates. `GetArg 0; GetArg 0; Sub; Return`.
     #[test]
     fn tag_guarded_arith_validates() {
         let code = vec![

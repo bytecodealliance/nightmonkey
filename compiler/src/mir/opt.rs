@@ -2249,7 +2249,7 @@ pub fn hoist_guards(m: &Module, f: &mut Func) -> usize {
     moved
 }
 
-/// Hoist read diamonds out of loops (MIR-MEMORY.md §2, KICKOFF-8 item 1).
+/// Hoist read diamonds out of loops (MIR-MEMORY.md §2).
 const HOIST_READS: bool = true;
 
 /// Hoist a loop's invariant read *diamonds*: a single-entry region whose

@@ -177,7 +177,7 @@ struct NightRegistration {
   uint32_t toolVersion;
   // ABI v2 engine-written extras (NightSnapshotCaptureExtras): self-hosted
   // compilation roots and force-compiled regex bytecode programs, serialized
-  // (formats documented at the serializers in night/runtime/NightInproc.cpp). 0
+  // (formats documented at the serializers in runtime/NightSnapshotExtras.cpp). 0
   // = absent.
   uint32_t selfHosted;  // malloc'd buffer address
   uint32_t selfHostedLen;

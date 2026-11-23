@@ -2,7 +2,7 @@
  * vim: set ts=8 sts=2 et sw=2 tw=80: */
 
 // X-macro list of the night_runtime_* helpers the night-compiler translator
-// resolves: the resolve_helpers list in js/src/night/compiler/src/wasm/mod.rs
+// resolves: the resolve_helpers list in compiler/src/wasm/mod.rs
 // (in order), plus night_runtime_regex_ci_compare (resolved separately in
 // translate_all). The in-process driver expands it into the {name, funcptr,
 // sig} import table the night_compile hostcall reads; the signature string is

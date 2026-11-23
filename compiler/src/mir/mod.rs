@@ -1,4 +1,4 @@
-//! The MIR: NightMonkey's mid-tier IR for the optimized (OPT) track.
+//! The MIR: NightMonkey's mid-tier IR, for the optimizing tier.
 //!
 //! See `docs/MIR.md` for the design. In short: SSA over a CFG with typed
 //! block params, where a type is representation × refinement; per-object

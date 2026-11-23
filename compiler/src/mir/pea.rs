@@ -1,5 +1,5 @@
-//! Partial escape analysis of literal objects (MIR-MEMORY.md §10, the
-//! owner's "materialize once").
+//! Partial escape analysis of literal objects (MIR-MEMORY.md §10):
+//! materialize once.
 //!
 //! A `lit.new` object that `sroa` cannot replace because it escapes
 //! somewhere stays virtual until it escapes: on every path, the first

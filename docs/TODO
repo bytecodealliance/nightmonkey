@@ -1,20 +1,14 @@
 - module scripts are never compiled by any tier: the shell loads a root
   module through the module loader, which never calls the `scriptCompiled`
   extension hook, so neither the in-process batch nor snapshot
-  registration sees module scripts (pre-existing, not new with baseline).
-  Register module roots in both flows; needed for full AOT under MIR too.
+  registration sees module scripts. Register module roots in both flows.
 - move abstract-interpretation transfer func for ops to types analysis
-  (currently in emitter for historical reasons)
+  (currently in emitter)
 - use a DSL to write lowering cases and type transfer functions for each op?
   - maybe ISLE?
-- `module_is_bigint_free` is weird and we should do better
 - AOT output is not reproducible: two compiles of one input differ in the
-  data segment (the wizened heap), not in code (checked 2026-10-01 on
-  richards and crypto: code sections byte-identical, MIR dumps identical).
-  Most of it was the wizening run executing Octane's top-level `main()`
-  (fixed time, so iteration counts and heap contents vary); the nm-bench
-  skill now wizens without that call. What remains is 608 bytes (richards):
-  the top of the shadow stack (63 MiB) and early heap allocations
+  data segment (the wizened heap), not in code. The differing bytes are the
+  top of the shadow stack (63 MiB) and early heap allocations
   (65-68 MiB), most likely values the runtime seeds at startup from WASI
   `random_get` and the clocks (hash-code scramblers, Math.random state,
   startup timestamps). Fix: wizen with a seeded random source and a fixed

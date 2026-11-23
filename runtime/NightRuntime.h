@@ -1,10 +1,10 @@
 /* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
  * vim: set ts=8 sts=2 et sw=2 tw=80: */
 
-// The C ABI exposed by the AOT runtime library (js/src/night/runtime/). This is
-// the only SpiderMonkey surface that AOT-generated Wasm code calls directly: a
-// flat, POD-only C ABI (no C++ types cross the boundary). See
-// js/src/night/docs/DESIGN.md section 8.1 for the full design.
+// The C ABI exposed by the AOT runtime library (runtime/). This is the only
+// SpiderMonkey surface that AOT-generated Wasm code calls directly: a flat,
+// POD-only C ABI (no C++ types cross the boundary). See docs/DESIGN.md
+// section 8 for the full design.
 
 #ifndef night_runtime_NightRuntime_h
 #define night_runtime_NightRuntime_h

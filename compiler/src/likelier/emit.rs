@@ -285,7 +285,7 @@ impl<'a> CtorRowExpander<'a> {
     /// Walk `f`'s own events in program order, appending its writes and
     /// splicing each delegation target's row where the call sits; with
     /// `SUPER_FIRST`, its `.call`/`.apply` delegates' rows (a superclass
-    /// constructor's) come first, wherever the call sits (MIR.md M5v).
+    /// constructor's) come first, wherever the call sits.
     fn collect(&mut self, f: ScriptId, top: ScriptId, depth: u32) -> Vec<NameId> {
         let mut out = LayoutRow::default();
         let Some(events) = self.events.get(&f).cloned() else {

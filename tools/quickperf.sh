@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # One-bench instruction-count A/B for two compiler binaries: the fast loop
-# for diagnosing a design step's cost. `metrics.sh` is the full three-axis
-# read; this is the bisector you run twenty times.
+# for diagnosing a design step's cost.
 #
 #   quickperf.sh <bench> <binA> [<binB>]     # default binB = build/bin/nightmonkey
 set -uo pipefail

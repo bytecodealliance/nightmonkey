@@ -53,10 +53,10 @@ namespace night {
 // flag bits is a compile-time constant baked into the wasm, and its other
 // half is a constant in the compiler:
 //
-//   js/src/night/compiler/src/wasm/mir/abi.rs   the object/shape/string/
-//                                               context offsets and flag bits
-//   js/src/night/compiler/src/wasm/translate.rs FIXED_SLOTS_BASE and the
-//                                               reserved-region row layouts
+//   compiler/src/wasm/mir/abi.rs   the object/shape/string/
+//                                  context offsets and flag bits
+//   compiler/src/wasm/translate.rs FIXED_SLOTS_BASE and the
+//                                  reserved-region row layouts
 //
 // The asserts below are the other side of that contract. If one fires, the
 // ENGINE moved a field and the compiler is now emitting the right load of
@@ -274,8 +274,8 @@ static_assert(JS::shadow::String::LATIN1_CHARS_BIT == (1u << 10),
 // --- The alloc-cell rows --------------------------------------------------
 //
 // The row sizes are shared with the compiler through NightRegionShape.h; the
-// field offsets inside a row are asserted here and mirrored in object.rs's
-// layout comment, where the stores are emitted. A construct row opens with an
+// field offsets inside a row are asserted here and mirrored in
+// compiler/src/wasm/mir/lower.rs, where the loads are emitted. A construct row opens with an
 // alloc row, so NightFillAllocCellObject fills it unchanged.
 static_assert(sizeof(NightAllocCell) == 20, "ALLOC_CELL fields");
 static_assert(sizeof(NightArrayAllocCell) <= js::night::Night_allocCellBytes,

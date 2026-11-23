@@ -86,9 +86,8 @@ static constexpr uint32_t kCtorSetBits = 16;
 // type), and a read under a set bit on a valid stamp trusts it. The engine
 // cannot tell which field a store writes (and should not look it up), so
 // every store through it drops TYPES; compiled stores to a known field
-// keep it for a value of the field's predicted type (owner ruling
-// 2026-09-27). RANGES is consumed CHECKLESSLY, so every store through the
-// engine drops it (owner ruling 2026-08-16).
+// keep it for a value of the field's predicted type. RANGES is
+// consumed CHECKLESSLY, so every store through the engine drops it.
 static constexpr uint32_t kStoreClearMask = kWordRanges | kWordTypes;
 static constexpr uint32_t kStoreNonNumberClearMask = kWordTypes;
 

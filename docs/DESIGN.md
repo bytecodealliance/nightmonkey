@@ -16,12 +16,17 @@ It does not consume execution profiles. The intended deployment is one
 wasm32-wasi SpiderMonkey runtime, one active `JSContext`, and one installed AOT
 environment per process.
 
-Those restrictions are currently embedding assumptions, not fully enforced API
-properties. Most AOT runtime state is process-global. An embedding must not
-install two environments or activate NightMonkey in two runtimes. The
-module-wide BigInt optimization also assumes values cannot enter from source or
-an embedder outside the captured program. Until enforced or removed, these are
-part of the trusted deployment boundary.
+All compiled scripts belong to one realm, and compiled code caches values of
+its global. Other realms may exist, but only interpreted code may run in them.
+
+These restrictions are embedding assumptions, not enforced API properties, and
+are part of the trusted deployment boundary: an embedding must not install two
+environments, activate NightMonkey in two runtimes, or register scripts of two
+realms.
+
+Nothing is assumed about values or code from outside the captured program.
+Source compiled at run time is interpreted, and values it or the embedder
+supplies (BigInts included) meet the same guards as any other.
 
 A compilation unit is a registered script tree plus selected self-hosted
 scripts and regular-expression programs. A script is compiled as a whole or
@@ -155,8 +160,9 @@ Scripts compile in two tiers (`docs/MIR.md`, `docs/BASELINE.md`).
 - **Baseline** (`wasm/baseline`) lowers each JSOp straight to Wasm, with no
   speculation: trivial ops inline, everything else a direct call to a runtime
   helper. The whole JS frame lives in NightStack memory, so the program state
-  at any pc is the frame plus the static operand depth there. Baseline compiles
-  every script except `ForceInterpreter` ones, and it is the correctness floor.
+  at any pc is the frame plus the static operand depth there. Baseline supports
+  every JSOp except `ForceInterpreter`, declining only a few scripts as a whole
+  (`docs/BASELINE.md` §8), and it is the correctness floor.
 - **MIR** (`mir/`, built and lowered by `wasm/mir`) is a typed SSA IR that
   represents only the optimistic path. Every predicted fact is checked once at
   its source and then held in the type of the value that carries it; a failed
@@ -184,14 +190,15 @@ and preserve JavaScript exception behavior.
 
 Before a may-GC call, every live GC value must be visible in the traced AOT
 stack or another engine root; MIR's lowering spills and reloads them around
-may-GC ops. Compiled direct calls return an error result and effect bits;
-effect bits kill heap, stamp, and binding facts but do not replace rooting.
+may-GC ops. Compiled direct calls return an error result and effect bits.
+MIR ignores the bits: whether a call demoted a class word, and so killed layout
+facts, it tells from the stamp epoch. None of this replaces rooting.
 
 ### Inlining
 
 MIR inlines by splicing: a small callee's MIR, built on its own, is copied
 into the caller at the call site. The callee keeps a real baseline-format
-frame (an inline frame) kept current by write-through, so each of its exits
+frame (an inline frame), written where a GC or an exit needs it, so each exit
 finishes the callee in its baseline body and continues the caller.
 
 ## 6. Object layouts and stamps
@@ -228,25 +235,20 @@ updates roots or invalidates raw-pointer caches.
 The construction sentinel prevents partial objects passing identity guards.
 Constructor exit publishes identity only after checked stores establish the
 surviving validity bits. Compatible prefix layouts receive contiguous keys so
-one range check can cover a layout *region*. Older comments call a region a
-*clump*.
+one range check can cover a layout *region*. Some comments call a region
+a *clump*.
 
 ## 7. Caches and fuses
 
 A fuse is a rarely changing condition represented by an armed or blown word.
 It is safe only if every operation that can falsify it reaches an invalidation
 point. NightMonkey uses fuses or generations for bindings, call and constructor
-targets, builtins, prototype-dependent operations, and dynamically compiled
-source.
+targets, builtins, and prototype-dependent operations.
 
 Global property hooks invalidate binding fuses for interpreted writes. Property
 cache rows publish their validity word last so generated code cannot see a
 partial row. Major GC clears raw shape/prototype caches; minor GC clears or
 rebuilds subsets that can hold nursery pointers.
-
-The dynamic-source fuse is intended to be monotone after capture. Re-arming is
-sound only when registration accounts for every source compiled so far and no
-unregistered compilation is interleaved.
 
 ## 8. Runtime ABI and memory regions
 
@@ -301,7 +303,7 @@ roots and digest (the wire format the tool finds through the
 `night.registration` export), the activation flag, the snapshot extras
 (`gShMirror`, `gWizening`), and the in-process option string. The stamp
 epoch is a `NightRuntimeState` field too, its address published in the
-strlit block as before.
+strlit block.
 
 The module's linear-memory regions (prop-IC ways, mega, append, accessor
 and add-transition tables, callee/construct/alloc/intrinsic/method cells,
@@ -315,11 +317,10 @@ with no compiled code running on that context.
 
 Compiled code still addresses the linear-memory regions (prop-IC ways,
 caches, cells, the strlit block, global slots) by absolute addresses the
-translator bakes in. A per-function base loaded from the context
-(`IC_BASE_FROM_CX` in wasm/mir/lower.rs, prototyped on the prop-IC ways
-through `JSContext::offsetOfExternalCompilerState` and
-`NightContextState::propIcBase`) cost react 5% and box2d, deltablue,
-earley-boyer and raytrace 2-4%; it is off, pending the owner's call.
+translator bakes in. `IC_BASE_FROM_CX` (wasm/mir/lower.rs, off) instead
+loads the prop-IC ways' base from the context, through
+`JSContext::offsetOfExternalCompilerState` and
+`NightContextState::propIcBase`; absolute addresses are faster.
 
 ## 10. Generators, async, exceptions, and regexps
 
@@ -327,7 +328,7 @@ Generator and async bodies compile in both tiers (with `NightGenerator.cpp`).
 Suspension stores locals and operands in an engine object using an AOT-owned
 layout; resume re-enters the same compiled script. In MIR, each yield's
 landing is a resume root that guards the restored frame back up to the types
-it had at the yield (`docs/MIR.md` §5.2, M5j). An AOT-suspended generator
+it had at the yield (`docs/MIR.md` §5.2). An AOT-suspended generator
 cannot resume in the interpreter. MIR declines bodies that read their actuals
 past their formals (a resume re-enters with none); baseline declines those
 that read them after the first suspend.
@@ -343,10 +344,9 @@ fallback. Exhausting fixed backtracking storage must return retry.
 
 ## 11. Limits and policy
 
-`constants.rs` is intended to collect analysis, specialization, inlining,
-translation, and diagnostic policy. Structural ABI limits stay with their
-representations. Some limits are scattered throughout the implementations of
-various heuristics; cleanup is ongoing.
+`constants.rs` collects analysis, specialization, inlining, translation, and
+diagnostic policy. Structural ABI limits stay with their representations. Some
+limits live in the implementations of the heuristics they bound.
 
 ## 12. Capabilities and fallback
 

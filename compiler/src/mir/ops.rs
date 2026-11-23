@@ -659,7 +659,7 @@ pub enum Opcode {
     /// code (`valueOf`, `toString`, `Symbol.toPrimitive`) fails before
     /// anything happened; a TypeError or RangeError of the op itself
     /// (a Symbol, BigInt mixing) takes `err`. Allocates (concatenation, a
-    /// BigInt), writes nothing (MIR-MEMORY.md §1, KICKOFF-8 item 1).
+    /// BigInt), writes nothing (MIR-MEMORY.md §9).
     Prim(PrimOp),
     JsGetProp(AtomId),
     /// `recv.name` where the lookup runs no code: an own or prototype data
@@ -667,7 +667,7 @@ pub enum Opcode {
     /// with the value. A lookup that would run code (a getter, a proxy, a
     /// resolve hook, a primitive with no prototype) or throw (`null`,
     /// `undefined`) fails, before anything happened. It reads the field by
-    /// name and nothing else (MIR-MEMORY.md §1: a property fallback's
+    /// name and nothing else (MIR-MEMORY.md §9: a property fallback's
     /// common case, which must not write `Unknown`).
     GetPropData(AtomId),
     /// `recv.name = v` where the set runs no code: an overwrite of an own
@@ -847,7 +847,7 @@ pub enum Opcode {
     NewThis(u32, u32),
     /// `new_this` with the first `n` fields of layout `key` added, their
     /// values the operands after `callee, proto` (a constructor whose body
-    /// starts by storing them: MIR.md M5q): the object under construction
+    /// starts by storing them): the object under construction
     /// with `n` fields, as that many `init_field`s would leave it. Runs no
     /// code; `fail` where an add would not be plain (a setter or read-only
     /// property of the name on the prototype chain), before anything

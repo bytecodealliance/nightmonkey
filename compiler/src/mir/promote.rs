@@ -1,5 +1,5 @@
-//! Loop-carried caching of memory locations (MIR-MEMORY.md §10, the
-//! owner's "materialize once, then cache"; KICKOFF-8 item 4).
+//! Loop-carried caching of memory locations (MIR-MEMORY.md §11):
+//! materialize once, then cache.
 //!
 //! A location a loop reads and writes through one base from before the
 //! loop is loaded once in the preheader and carried around the loop as a

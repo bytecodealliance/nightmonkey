@@ -570,7 +570,7 @@ impl ObjInfo {
 
     /// The shallow view of an object claim loaded out of a field (§4.3):
     /// immutable components only. A parent's `TYPES` bit cannot soundly
-    /// promise the child's layout identity (§4.6 point 4).
+    /// promise the child's layout identity (§4.6).
     pub fn shallow(&self) -> ObjInfo {
         ObjInfo {
             layout: None,
@@ -815,7 +815,7 @@ impl Type {
         }
     }
 
-    /// `Val(⊤)`: what crosses the OPT/GEN boundary (§5).
+    /// `Val(⊤)`: what crosses the MIR/baseline boundary (MIR.md §5).
     pub fn is_val_top(&self) -> bool {
         *self == Type::VAL_TOP
     }

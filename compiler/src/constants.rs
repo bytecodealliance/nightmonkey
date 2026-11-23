@@ -81,15 +81,6 @@ pub(crate) const IOF_WALK_DEPTH: u32 = 8;
 
 // --- translation: what the compiler will take on -------------------------
 
-/// Hard cap on emitted SSA values: a refined pass that overruns this
-/// descends the overflow ladder (fanout-off, then GEN-only); the workqueue
-/// drain aborts early once past it. Structural version identity bounds the
-/// version count but not the emitted size, and the wasm function-size limit
-/// and relooper tail duplication are real and independent of it.
-//
-
-// --- translation: the versioning fixpoint --------------------------------
-
 // --- translation: inlining -----------------------------------------------
 
 /// Callee size cap for a polymorphic (guard-chain) inline arm.
@@ -144,9 +135,8 @@ pub(crate) const MAX_BT_LABELS: usize = 8192;
 /// guard the emitter armed. Disjoint from the track-census kinds (1/2/3,
 /// 47, 48/50) so both instruments can run in the same build.
 ///
-/// The property ladder's kinds mirror DESIGN.md section 5.2: `L1*` are the
-/// class-fact arms (the analysis's own prediction), `IC_*` the per-site
-/// inline cache below them. A site's total executions are the sum over its
+/// Of the property ladder's kinds, `L1*` are the class-fact arms (the
+/// analysis's own prediction), `IC_*` the per-site inline cache below them. A site's total executions are the sum over its
 /// kinds, and "the prediction held" is the L1 share of that.
 pub(crate) mod census {
 

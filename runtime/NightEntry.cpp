@@ -41,7 +41,7 @@ namespace night {
 // function pointer to an i32 index into __indirect_function_table, so calling
 // through
 // `(NightFn)(uintptr_t)index` lowers to a call_indirect of this exact
-// signature. See docs/DESIGN.md section 8.3.
+// signature. See docs/DESIGN.md section 8.
 using NightFn = int32_t (*)(JSContext* cx, void* sp, uint32_t argc,
                             uint64_t* retvalOut, void* script,
                             uint64_t newTarget);

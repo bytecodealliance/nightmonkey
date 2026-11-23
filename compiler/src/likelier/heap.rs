@@ -453,8 +453,8 @@ impl Solver<'_> {
     /// mangled cell with the named native resolves the kernel calls the
     /// self-hosted string code bottoms out in. Leaving a kernel such as
     /// `Substring` unresolved would make the RegExp-replace buildup's
-    /// results unresolved evidence and push every concat of one off the
-    /// Opt track.
+    /// results unresolved evidence and push every concat of one onto
+    /// the generic path.
     fn seed_intrinsic_natives(&mut self) {
         // (intrinsic name, bare name the result mask resolves through).
         const INTRINSICS: &[(&str, &str)] = &[

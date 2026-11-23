@@ -1,7 +1,6 @@
-//! The JSOps-to-MIR builder (`docs/MIR.md` §8), for the M2 subset: locals,
-//! args, `this` and the operand stack as SSA values; int32 and double
-//! arithmetic and compares, with the generic `js.*` ops as the fallback;
-//! branches, loops and returns. Any other op declines the script, which
+//! The JSOps-to-MIR builder (`docs/MIR.md` §8): locals, args, `this`
+//! and the operand stack as SSA values, with the generic `js.*` ops as
+//! the fallback. An op it does not model declines the script, which
 //! then runs in baseline alone.
 //!
 //! **Types.** Every frame slot has an abstract type: a raw `I32`, `F64` or
@@ -707,9 +706,6 @@ fn build_at<'a>(
     if !ACTUALS && fl.rebase_vp {
         return Err("reads actuals".into());
     }
-    // The env chain is fixed for the whole activation (§5.1): the callee's
-    // own environment, or the one the entry makes (`env_setup`); an op
-    // that pushes a scope declines on its own.
     let depths = StackDepths::compute(script).map_err(|e| format!("stack depths ({e})"))?;
     let mut shape = Shape::of(ctx, sid, script, fl, depths)?;
     shape.names = Some(names);
@@ -2607,7 +2603,7 @@ impl<'s, 'a> Run<'s, 'a> {
         }
         let x = self.top();
         let keys = KeyRange { lo, hi };
-        // Identity and TYPES are what OPT means (§4.3): where the layouts
+        // Identity and TYPES are what MIR code relies on (MIR.md §4.3): where the layouts
         // type their fields, the guard proves TYPES too, and `this`'s
         // field reads are of their predicted types unchecked.
         let types = (lo.get()..=hi.get()).all(|k| self.s.types_bit(k) != 0);
@@ -3298,7 +3294,7 @@ impl<'s, 'a> Run<'s, 'a> {
             })
     }
 
-    /// `x.a` as a data read (`getprop.data`, MIR-MEMORY.md §1): ok with
+    /// `x.a` as a data read (`getprop.data`, MIR-MEMORY.md §9): ok with
     /// the value; a lookup that would run code or throw exits here, before
     /// the op, for baseline to do it.
     fn data_get(&mut self, a: mir::entity::AtomId, x: mir::Value) -> mir::Value {
@@ -3321,7 +3317,7 @@ impl<'s, 'a> Run<'s, 'a> {
     }
 
     /// `x.a = y` (`post` the value, left on the stack) through the IC: a
-    /// set that runs no code (`setprop.data`, MIR-MEMORY.md §1) where no
+    /// set that runs no code (`setprop.data`, MIR-MEMORY.md §9) where no
     /// known setter has the name and a demotion can exit after it, a set
     /// that would run code exiting here, before the op, for baseline to
     /// do it; else the generic set.
@@ -4724,7 +4720,7 @@ impl<'s, 'a> Run<'s, 'a> {
         }
     }
 
-    /// Narrowing from a dynamic test (§4.4): a test of whether `x`'s tag
+    /// Narrowing from a dynamic test (§8): a test of whether `x`'s tag
     /// is in `tags` (negated if `negate`) that the next op branches on,
     /// fused with that branch into one `guard.tags` whose ok edge carries
     /// `x` narrowed to the branch it takes, every slot holding it
@@ -4790,7 +4786,7 @@ impl<'s, 'a> Run<'s, 'a> {
         true
     }
 
-    /// Narrowing from `x instanceof C` (§4.4), whose boolean is on top of
+    /// Narrowing from `x instanceof C` (§8), whose boolean is on top of
     /// the stack, where the next op branches on it: the true side knows
     /// `x` is an object (an ordinary function's `instanceof` walks a
     /// prototype chain, which a primitive has none of), so there `x` is

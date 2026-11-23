@@ -240,10 +240,9 @@ pub(crate) fn native_math_index(name: &str) -> Option<u32> {
 
 
 /// Property-IC sites address their ways from a base the function loads
-/// from its context, not as patched absolute addresses (the per-context
-/// regions prototype, KICKOFF-10 workstream 2 step 3). Off: against the
-/// absolute form it cost react 5%, box2d 3.9%, deltablue 3.3%,
-/// earley-boyer 3.1%, raytrace 2.2% (2026-10-04), so the owner decides.
+/// from its context, not as patched absolute addresses. Off: absolute
+/// addresses are faster (an address is a constant, with no base load), and
+/// contexts share the regions anyway.
 const IC_BASE_FROM_CX: bool = false;
 
 /// `guard.unbox.f64num` branches on the tag, the double first, rather

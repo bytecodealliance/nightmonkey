@@ -265,8 +265,8 @@ pub(crate) const NURSERY_HEADER_BYTES: u32 = 8;
 
 // --- the sig2 return flags word -------------------------------------------
 //
-// Bits set = effects happened, so ORs accumulate and gen_only bodies return
-// all-set. No GC bit by design: rooting stays static and may-GC is never a
+// Bits set = effects happened, so ORs accumulate and a body that tracks no
+// effects may return all-set. No GC bit by design: rooting stays static and may-GC is never a
 // fact kill, so the word is mutation-only.
 
 /// Wrote only through the body's own `this`.
@@ -290,7 +290,7 @@ pub(crate) const FLAGS_ALL: u32 = FLAG_MUT_THIS | FLAG_MUT_OTHER | FLAG_STAMPS |
 // --- reserved-region cells the emitter addresses --------------------------
 //
 // Each of these is a row in a reserved linear-memory region (DESIGN.md
-// section 8.5). The emitter cannot know the region base while it is building
+// section 8). The emitter cannot know the region base while it is building
 // a body, so it emits the `*_ADDR_PLACEHOLDER` constant and records the row
 // index; `wasm/mod.rs` rewrites the constant once the layout is fixed. The
 // placeholder values are arbitrary but must stay distinct, because that is

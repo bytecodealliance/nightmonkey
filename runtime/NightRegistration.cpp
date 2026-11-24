@@ -347,10 +347,9 @@ JS_PUBLIC_API bool JS::NightRegisterRoot(JSContext* cx,
   return true;
 }
 
-// Activation after a transformed snapshot resumes: install the runtime
-// environment from the tool-written region table, apply the fuse policy,
-// and enable dispatch. The tool already set each compiled script's
-// nightFuncIndex_ in the image.
+// Reading the environment at activation is opt-in (`-DNIGHT_DEBUG_ENV=ON` in
+// CMake).
+#ifdef NIGHT_DEBUG_ENV
 extern "C" void NightCensusTraceRearm();
 
 // `NIGHT_GC_STATS`: at exit, the minor GCs, the bytes they promoted (the
@@ -379,6 +378,7 @@ static void NightStatsDump() {
           (unsigned long long)js::nightrt::TheNightStack(gStatsCx).traces(),
           (unsigned long long)js::nightrt::TheNightStack(gStatsCx).tracedSlots());
 }
+#endif
 
 JS_PUBLIC_API void JS::NightClearCaches(JSContext* cx) {
   if (gNightActivated && nightrt::NightStateOf(cx)) {
@@ -387,12 +387,14 @@ JS_PUBLIC_API void JS::NightClearCaches(JSContext* cx) {
 }
 
 JS_PUBLIC_API bool JS::NightActivate(JSContext* cx) {
+#ifdef NIGHT_DEBUG_ENV
   NightCensusTraceRearm();
   if (getenv("NIGHT_GC_STATS") && !gStatsCx) {
     gStatsCx = cx;
     JS::AddGCNurseryCollectionCallback(cx, NightStatsNursery, nullptr);
     atexit(NightStatsDump);
   }
+#endif
   if (gNightActivated) {
     MOZ_RELEASE_ASSERT(night_runtime_env_context() == cx,
                        "NightMonkey is active in another context");

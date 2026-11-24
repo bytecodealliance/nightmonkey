@@ -65,3 +65,39 @@ for (var k = 0; k < 60; k++) {
 assertEq(loopAlias(30000, 0, 1), 30000);   // an onramp
 assertEq(alias(1.5, "x"), NaN);            // an exit: a double, a string
 assertEq(alias(1, "x"), NaN);
+
+// A formal written on one branch only and read after the join: its frame
+// slot is dead on the writing path and live on the other (testharness.js's
+// `Test.prototype.step`).
+function step(fn, o) {
+  if (fn.skip) return;
+  if (arguments.length === 1) {
+    o = this;
+  }
+  try {
+    return fn.apply(o, Array.prototype.slice.call(arguments, 2));
+  } catch (e) {
+    return String(e) + typeof o;
+  } finally {
+    step.n = 1;
+  }
+}
+// The same with a formal that has a narrow type on the other path.
+function joinInt(a, b) {
+  if (arguments.length === 1) {
+    b = 3;
+  }
+  var s = 0;
+  for (var i = 0; i < 4; i++) s += b;
+  return s + a;
+}
+function q(x) { return this.q + x; }
+function thrower() { throw 1; }
+for (var m = 0; m < 60; m++) {
+  assertEq(step(q, {q: 1}, 5), 6);
+  assertEq(step.call({q: 7}, function () { return this.q; }), 7);
+  assertEq(step(thrower, 2), "1number");
+  assertEq(step(thrower), "1object");
+  assertEq(joinInt(1, 2), 9);
+  assertEq(joinInt(1), 13);
+}

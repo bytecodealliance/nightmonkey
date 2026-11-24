@@ -4649,18 +4649,22 @@ impl<'s, 'a> Run<'s, 'a> {
         // A formal a mapped `arguments` aliases is written through the
         // frame (`ArgsMappedSet`), which leaves its slot dead on this path;
         // where the target takes a value for it, the current one, read
-        // back (else the target's entry types never settle).
+        // back (else the target's entry types never settle). A target not
+        // entered yet takes one for each slot live there, and the read-back
+        // has to come before its entry types are joined from its edges'.
         if self.mapped() {
-            if let Some(want) = self.entry_types.get(&to).cloned() {
-                for n in 0..self.s.nargs {
-                    let ix = self.arg_ix(n);
-                    if self.st.get(ix).is_some_and(|x| x.ty == Ty::Dead) && want.get(ix).is_some_and(|&t| t != Ty::Dead) {
-                        let v = self.inst(Opcode::ArgsMapped(n), vec![], Some(MType::VAL_TOP));
-                        self.st[ix] = Slot {
-                            v,
-                            ty: Ty::Val(TagSet::ALL),
-                        };
-                    }
+            for n in 0..self.s.nargs {
+                let ix = self.arg_ix(n);
+                let wanted = match self.entry_types.get(&to) {
+                    Some(want) => want.get(ix).is_some_and(|&t| t != Ty::Dead),
+                    None => self.s.live.get(&to).is_some_and(|l| l[ix]),
+                };
+                if wanted && self.st[ix].ty == Ty::Dead {
+                    let v = self.inst(Opcode::ArgsMapped(n), vec![], Some(MType::VAL_TOP));
+                    self.st[ix] = Slot {
+                        v,
+                        ty: Ty::Val(TagSet::ALL),
+                    };
                 }
             }
         }

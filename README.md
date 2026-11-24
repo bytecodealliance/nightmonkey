@@ -124,7 +124,9 @@ libjs used (same sysroot, target, ABI flags and force-included configuration
 headers), and drives Cargo for the host tools. Options:
 `-DNIGHT_INPROCESS=OFF` drops the in-process lane (no `js-inproc`, no
 runner); `-DNIGHT_DEBUG=ON` turns on the runtime diagnostics and
-the crash-on-failure of the in-process lane; `-DNIGHT_ENGINE_VERSION=ff147`
+the crash-on-failure of the in-process lane; `-DNIGHT_DEBUG_ENV=ON` makes
+activation read `NIGHT_GC_STATS` and `NIGHT_CENSUS_TRACE` from the
+environment; `-DNIGHT_ENGINE_VERSION=ff147`
 selects the engine version (below).
 
 Plain `cargo build` works for the Rust crates.
